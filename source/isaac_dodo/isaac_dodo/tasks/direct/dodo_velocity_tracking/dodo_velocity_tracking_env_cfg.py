@@ -72,18 +72,18 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
     ]
     target_forward_speed: float = 1.0
     vel_tracking_weight: float = 3.0
-    dir_tracking_weight: float = 1.0
+    dir_tracking_weight: float = 2.5
 
     heading_weight: float = 0.5
     up_weight: float = 0.1
 
     energy_cost_scale: float = 0.05
     actions_cost_scale: float = 0.01
-    alive_reward_scale: float = 1.0
+    alive_reward_scale: float = 2.0
     dof_vel_scale: float = 0.1
 
     death_cost: float = -1.0
-    termination_height: float = 0.8
+    termination_height: float = 1.1
 
     angular_velocity_scale: float = 0.25
     contact_force_scale: float = 0.01

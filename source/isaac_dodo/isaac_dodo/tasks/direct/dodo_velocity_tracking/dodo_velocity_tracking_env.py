@@ -177,7 +177,7 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         # initial randomization: speed in [-1, 2] m/s, heading in [0, 2*pi)
         self.target_forward_speeds[env_ids] = torch.empty(
             len(env_ids), device=self.sim.device
-        ).uniform_(-1.0, 2.0)
+        ).uniform_(-2.0, 2.0)
         self.target_headings[env_ids] = torch.empty(
             len(env_ids), device=self.sim.device
         ).uniform_(0.0, 2.0 * math.pi)
