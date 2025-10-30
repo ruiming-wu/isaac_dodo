@@ -8,6 +8,7 @@ from __future__ import annotations
 import torch
 import isaacsim.core.utils.torch as torch_utils
 import isaaclab.sim as sim_utils
+import math
 
 from isaacsim.core.utils.torch.rotations import compute_heading_and_up, compute_rot, quat_conjugate
 from isaaclab.assets import Articulation
@@ -31,12 +32,10 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         self.motor_effort_ratio = torch.ones_like(self.joint_gears, device=self.sim.device)
         self._joint_dof_idx, _ = self.robot.find_joints(".*")
 
-        self.potentials = torch.zeros(self.num_envs, dtype=torch.float32, device=self.sim.device)
-        self.prev_potentials = torch.zeros_like(self.potentials)
-        self.targets = torch.tensor([1000, 0, 0], dtype=torch.float32, device=self.sim.device).repeat(
-            (self.num_envs, 1)
-        )
-        self.targets += self.scene.env_origins
+        # remove positional target; use pure speed+heading targets (per-env)
+        self.target_forward_speeds = torch.full((self.num_envs,), float(self.cfg.target_forward_speed), device=self.sim.device)
+        # desired heading (radians, 0 = +x); keep fixed 0 unless randomized elsewhere
+        self.target_headings = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.sim.device)
         self.start_rotation = torch.tensor([1, 0, 0, 0], device=self.sim.device, dtype=torch.float32)
         self.up_vec = torch.tensor([0, 0, 1], dtype=torch.float32, device=self.sim.device).repeat((self.num_envs, 1))
         self.heading_vec = torch.tensor([1, 0, 0], dtype=torch.float32, device=self.sim.device).repeat(
@@ -111,7 +110,7 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
             (
                 self.torso_position[:, 2].view(-1, 1),
                 self.vel_loc,
-                self.angvel_loc * self.cfg.angular_velocity_scale,
+                self.ang_velocity * self.cfg.angular_velocity_scale,
                 normalize_angle(self.yaw).unsqueeze(-1),
                 normalize_angle(self.roll).unsqueeze(-1),
                 normalize_angle(self.angle_to_target).unsqueeze(-1),
@@ -120,6 +119,8 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
                 self.dof_pos_scaled,
                 self.dof_vel * self.cfg.dof_vel_scale,
                 self.actions,
+                self.target_forward_speeds.unsqueeze(-1),
+                self.target_headings.unsqueeze(-1),
             ),
             dim=-1,
         )
@@ -136,14 +137,17 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
             self.up_proj,
             self.dof_vel,
             self.dof_pos_scaled,
-            self.potentials,
-            self.prev_potentials,
             self.cfg.actions_cost_scale,
             self.cfg.energy_cost_scale,
             self.cfg.dof_vel_scale,
             self.cfg.death_cost,
             self.cfg.alive_reward_scale,
             self.motor_effort_ratio,
+            self.vel_loc,
+            self.angle_to_target,
+            self.target_forward_speeds,
+            float(self.cfg.vel_tracking_weight),
+            float(self.cfg.dir_tracking_weight),
         )
         return total_reward
 
@@ -151,11 +155,12 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         self._compute_intermediate_values()
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         died = self.torso_position[:, 2] < self.cfg.termination_height
-        return died, time_out
+        return time_out, died
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
-        if env_ids is None or len(env_ids) == self.num_envs:
-            env_ids = self.robot._ALL_INDICES
+        # ensure env_ids is a valid index tensor for per-env operations
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.sim.device, dtype=torch.long)
         self.robot.reset(env_ids)
         super()._reset_idx(env_ids)
 
@@ -168,9 +173,14 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
-        to_target = self.targets[env_ids] - default_root_state[:, :3]
-        to_target[:, 2] = 0.0
-        self.potentials[env_ids] = -torch.norm(to_target, p=2, dim=-1) / self.cfg.sim.dt
+        # ensure per-env targets exist for reset envs
+        # initial randomization: speed in [-1, 2] m/s, heading in [0, 2*pi)
+        self.target_forward_speeds[env_ids] = torch.empty(
+            len(env_ids), device=self.sim.device
+        ).uniform_(-1.0, 2.0)
+        self.target_headings[env_ids] = torch.empty(
+            len(env_ids), device=self.sim.device
+        ).uniform_(0.0, 2.0 * math.pi)
 
         self._compute_intermediate_values()
 
@@ -185,38 +195,47 @@ def compute_rewards(
     up_proj: torch.Tensor,
     dof_vel: torch.Tensor,
     dof_pos_scaled: torch.Tensor,
-    potentials: torch.Tensor,
-    prev_potentials: torch.Tensor,
     actions_cost_scale: float,
     energy_cost_scale: float,
     dof_vel_scale: float,
     death_cost: float,
     alive_reward_scale: float,
     motor_effort_ratio: torch.Tensor,
+    vel_loc: torch.Tensor,
+    angle_to_target: torch.Tensor,
+    target_forward_speed: torch.Tensor,
+    vel_tracking_weight: float,
+    dir_tracking_weight: float,
 ):
     heading_weight_tensor = torch.ones_like(heading_proj) * heading_weight
     heading_reward = torch.where(heading_proj > 0.8, heading_weight_tensor, heading_weight * heading_proj / 0.8)
 
     # aligning up axis of robot and environment
     up_reward = torch.zeros_like(heading_reward)
-    up_reward = torch.where(up_proj > 0.93, up_reward + up_weight, up_reward)
+    up_reward = torch.where(up_proj > 0.95, up_reward + up_weight, up_reward)
 
-    # energy penalty for movement
+    # energy / action penalties
     actions_cost = torch.sum(actions**2, dim=-1)
     electricity_cost = torch.sum(
         torch.abs(actions * dof_vel * dof_vel_scale) * motor_effort_ratio.unsqueeze(0),
         dim=-1,
     )
-
-    # dof at limit cost
     dof_at_limit_cost = torch.sum(dof_pos_scaled > 0.98, dim=-1)
 
-    # reward for duration of staying alive
-    alive_reward = torch.ones_like(potentials) * alive_reward_scale
-    progress_reward = potentials - prev_potentials
+    # alive reward (per step)
+    alive_reward = torch.ones_like(heading_proj) * alive_reward_scale
+
+    # velocity tracking (forward axis = x in local frame)
+    vel_forward = vel_loc[:, 0]
+    vel_err = vel_forward - target_forward_speed
+    vel_tracking_reward = -vel_tracking_weight * (vel_err * vel_err)
+
+    # direction tracking: cosine of heading error
+    dir_tracking_reward = dir_tracking_weight * torch.cos(angle_to_target)
 
     total_reward = (
-        progress_reward
+        vel_tracking_reward
+        + dir_tracking_reward
         + alive_reward
         + up_reward
         + heading_reward
@@ -224,7 +243,6 @@ def compute_rewards(
         - energy_cost_scale * electricity_cost
         - dof_at_limit_cost
     )
-    # adjust reward for fallen agents
     total_reward = torch.where(reset_terminated, torch.ones_like(total_reward) * death_cost, total_reward)
     return total_reward
 

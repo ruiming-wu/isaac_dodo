@@ -21,8 +21,8 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
     decimation = 2
     action_scale = 1.0
     action_space = 21
-    observation_space = 75
-    state_space = 0
+    observation_space = 77
+    state_space = 2
 
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
@@ -70,13 +70,16 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
         22.5,  # left_foot
         22.5,  # left_foot
     ]
+    target_forward_speed: float = 1.0
+    vel_tracking_weight: float = 3.0
+    dir_tracking_weight: float = 1.0
 
     heading_weight: float = 0.5
     up_weight: float = 0.1
 
     energy_cost_scale: float = 0.05
     actions_cost_scale: float = 0.01
-    alive_reward_scale: float = 2.0
+    alive_reward_scale: float = 1.0
     dof_vel_scale: float = 0.1
 
     death_cost: float = -1.0
