@@ -62,7 +62,7 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
     foot_link_names: list[str] = ["left_link_4", "right_link_4"]
 
     # task
-    cmd_lin_range = [-2.0, 2.0]  # m/s
+    cmd_lin_range = [1.5, 2.5]  # m/s
     cmd_ang_range = [-2.0, 2.0]  # rad/s
 
     termination_height = 0.3  # m
@@ -70,14 +70,14 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
     termination_pitch = 1.0  # rad
 
     # reward scales
-    reward_lin_vel_w = 2.0
-    reward_ang_vel_w = 2.0
+    reward_lin_vel_w = 3.0
+    reward_ang_vel_w = 3.0
     reward_orientation_w = 0.5
     reward_torque_reg_w = 0.01
     reward_action_rate_w = 0.05
     reward_alive_w = 0.2
     reward_foot_in_air = 2.0
-    reward_failure_penalty = -100.0
+    reward_failure_penalty = -20.0
 
     # shaping sigmas
     lin_vel_sigma = 0.5
