@@ -1,0 +1,90 @@
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py
+	modified:   source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	logs/rsl_rl/dodo_velocity_tracking_ppo/2025-11-13_18-16-50/
+	logs/rsl_rl/dodo_velocity_tracking_ppo/2025-11-13_18-53-11/
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py b/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py
+index 981a4ba..c4ec117 100644
+--- a/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py
++++ b/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py
+@@ -40,6 +40,13 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
+         self.applied_torques = torch.zeros((self.num_envs, self.cfg.action_space), dtype=torch.float32, device=self.sim.device)
+         self.prev_actions = torch.zeros((self.num_envs, self.cfg.action_space), dtype=torch.float32, device=self.sim.device)
+ 
++        pattern = "|".join([f"^{n}$" for n in self.cfg.foot_link_names])
++        feet_ids, found = self.robot.find_bodies(pattern)
++        if len(feet_ids) == 0:
++            raise RuntimeError(f"Foot link names not found: {self.cfg.foot_link_names}. "
++                               f"Please set cfg.foot_link_names to your actual foot body names.")
++        self._feet_body_ids = torch.as_tensor(feet_ids, dtype=torch.long, device=self.sim.device)
++
+     def _setup_scene(self):
+         self.robot = Articulation(self.cfg.robot)
+         # add ground plane
+@@ -81,7 +88,13 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
+         self.pitch = torch.asin(torch.clamp(2 * (qw * qy - qz * qx), -1 + 1e-6, 1 - 1e-6))
+         self.yaw = torch.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+ 
++        self.body_pos_w = self.robot.data.body_pos_w
++        feet_z = self.body_pos_w[:, self._feet_body_ids, 2]
++        feet_in_air = feet_z > 0.05
++        self.num_feet_in_air = torch.sum(feet_in_air.float(), dim=1)
++
+     def _get_observations(self) -> dict:
++        self._compute_intermediate_values()
+         obs = torch.cat(
+             (
+                 self.motor_pos,
+@@ -137,8 +150,11 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
+         failure = height_failure | roll_failure | pitch_failure
+         p_fail = failure.float() * self.cfg.reward_failure_penalty
+ 
++        # foot in air reward
++        r_foot_in_air = self.cfg.reward_foot_in_air * (self.num_feet_in_air / len(self._feet_body_ids))
++
+         # total reward
+-        total_reward = r_lin + r_ang + r_orient + r_torque + r_action_rate + r_alive + p_fail
++        total_reward = r_lin + r_ang + r_orient + r_torque + r_action_rate + r_alive + p_fail + r_foot_in_air
+ 
+         return total_reward
+ 
+diff --git a/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py b/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py
+index e4e3613..632d0fb 100644
+--- a/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py
++++ b/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py
+@@ -59,9 +59,11 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
+         2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5
+     ]
+ 
++    foot_link_names: list[str] = ["left_link_4", "right_link_4"]
++
+     # task
+-    cmd_lin_range = [-1.0, 1.0]  # m/s
+-    cmd_ang_range = [-1.0, 1.0]  # rad/s
++    cmd_lin_range = [-2.0, 2.0]  # m/s
++    cmd_ang_range = [-2.0, 2.0]  # rad/s
+ 
+     termination_height = 0.3  # m
+     termination_roll = 1.0  # rad
+@@ -74,6 +76,7 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
+     reward_torque_reg_w = 0.01
+     reward_action_rate_w = 0.05
+     reward_alive_w = 0.2
++    reward_foot_in_air = 2.0
+     reward_failure_penalty = -100.0
+ 
+     # shaping sigmas

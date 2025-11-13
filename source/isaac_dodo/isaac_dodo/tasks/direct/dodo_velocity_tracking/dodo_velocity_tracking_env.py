@@ -40,6 +40,13 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         self.applied_torques = torch.zeros((self.num_envs, self.cfg.action_space), dtype=torch.float32, device=self.sim.device)
         self.prev_actions = torch.zeros((self.num_envs, self.cfg.action_space), dtype=torch.float32, device=self.sim.device)
 
+        pattern = "|".join([f"^{n}$" for n in self.cfg.foot_link_names])
+        feet_ids, found = self.robot.find_bodies(pattern)
+        if len(feet_ids) == 0:
+            raise RuntimeError(f"Foot link names not found: {self.cfg.foot_link_names}. "
+                               f"Please set cfg.foot_link_names to your actual foot body names.")
+        self._feet_body_ids = torch.as_tensor(feet_ids, dtype=torch.long, device=self.sim.device)
+
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
         # add ground plane
@@ -81,7 +88,13 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         self.pitch = torch.asin(torch.clamp(2 * (qw * qy - qz * qx), -1 + 1e-6, 1 - 1e-6))
         self.yaw = torch.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
 
+        self.body_pos_w = self.robot.data.body_pos_w
+        feet_z = self.body_pos_w[:, self._feet_body_ids, 2]
+        feet_in_air = feet_z > 0.05
+        self.num_feet_in_air = torch.sum(feet_in_air.float(), dim=1)
+
     def _get_observations(self) -> dict:
+        self._compute_intermediate_values()
         obs = torch.cat(
             (
                 self.motor_pos,
@@ -137,8 +150,11 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         failure = height_failure | roll_failure | pitch_failure
         p_fail = failure.float() * self.cfg.reward_failure_penalty
 
+        # foot in air reward
+        r_foot_in_air = self.cfg.reward_foot_in_air * (self.num_feet_in_air / len(self._feet_body_ids))
+
         # total reward
-        total_reward = r_lin + r_ang + r_orient + r_torque + r_action_rate + r_alive + p_fail
+        total_reward = r_lin + r_ang + r_orient + r_torque + r_action_rate + r_alive + p_fail + r_foot_in_air
 
         return total_reward
 
