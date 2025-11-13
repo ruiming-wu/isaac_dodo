@@ -11,7 +11,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 32
-    max_iterations = 1000
+    max_iterations = 300
     save_interval = 50
     experiment_name = "dodo_velocity_tracking_ppo"
     empirical_normalization = True

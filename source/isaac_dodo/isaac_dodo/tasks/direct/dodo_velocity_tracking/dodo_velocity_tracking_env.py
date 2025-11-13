@@ -228,8 +228,8 @@ def compute_rewards(
     # velocity tracking (forward axis = x in local frame)
     vel_forward = vel_loc[:, 0]
     vel_err = vel_forward - target_forward_speed
-    vel_tracking_reward = -vel_tracking_weight * (vel_err * vel_err)
-
+    vel_tracking_reward = vel_tracking_weight * torch.exp(-2.0 * vel_err * vel_err)
+    
     # direction tracking: cosine of heading error
     dir_tracking_reward = dir_tracking_weight * torch.cos(angle_to_target)
 
