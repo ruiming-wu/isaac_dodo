@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab_assets import HUMANOID_CFG
+from isaac_dodo.assets.robots.dodo import DODO_CFG
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
@@ -20,9 +20,17 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
     episode_length_s = 15.0
     decimation = 2
     action_scale = 1.0
-    action_space = 21
-    observation_space = 77
-    state_space = 2
+    action_space = 8
+    observation_space = 35
+    # 8 joint positions
+    # 8 joint velocities
+    # 8 joint efforts
+    # 3 base linear velocities
+    # 3 base angular velocities
+    # roll, pitch, yaw
+    # linear velocity command (1 dim)
+    # angular velocity command (1 dim)
+    state_space = 0
 
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
@@ -46,44 +54,30 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
     )
 
     # robot
-    robot: ArticulationCfg = HUMANOID_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    robot: ArticulationCfg = DODO_CFG.replace(prim_path="/World/envs/env_.*/Robot")
     joint_gears: list = [
-        67.5000,  # lower_waist
-        67.5000,  # lower_waist
-        67.5000,  # right_upper_arm
-        67.5000,  # right_upper_arm
-        67.5000,  # left_upper_arm
-        67.5000,  # left_upper_arm
-        67.5000,  # pelvis
-        45.0000,  # right_lower_arm
-        45.0000,  # left_lower_arm
-        45.0000,  # right_thigh: x
-        135.0000,  # right_thigh: y
-        45.0000,  # right_thigh: z
-        45.0000,  # left_thigh: x
-        135.0000,  # left_thigh: y
-        45.0000,  # left_thigh: z
-        90.0000,  # right_knee
-        90.0000,  # left_knee
-        22.5,  # right_foot
-        22.5,  # right_foot
-        22.5,  # left_foot
-        22.5,  # left_foot
+        2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5
     ]
-    target_forward_speed: float = 1.0
-    vel_tracking_weight: float = 3.0
-    dir_tracking_weight: float = 2.5
 
-    heading_weight: float = 0.5
-    up_weight: float = 0.1
+    # task
+    cmd_lin_range = [-1.0, 1.0]  # m/s
+    cmd_ang_range = [-1.0, 1.0]  # rad/s
 
-    energy_cost_scale: float = 0.05
-    actions_cost_scale: float = 0.01
-    alive_reward_scale: float = 2.0
-    dof_vel_scale: float = 0.1
+    termination_height = 0.3  # m
+    termination_roll = 1.0  # rad
+    termination_pitch = 1.0  # rad
 
-    death_cost: float = -1.0
-    termination_height: float = 1.1
+    # reward scales
+    reward_lin_vel_w = 2.0
+    reward_ang_vel_w = 2.0
+    reward_orientation_w = 0.5
+    reward_torque_reg_w = 0.01
+    reward_action_rate_w = 0.05
+    reward_alive_w = 0.2
+    reward_failure_penalty = -100.0
 
-    angular_velocity_scale: float = 0.25
-    contact_force_scale: float = 0.01
+    # shaping sigmas
+    lin_vel_sigma = 0.5
+    ang_vel_sigma = 0.5
+    orientation_sigma = 0.5
+    action_rate_sigma = 0.2

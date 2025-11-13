@@ -9,7 +9,6 @@
 **/.thumbs
 
 # No USD files allowed in the repo
-**/*.usd
 **/*.usda
 **/*.usdc
 **/*.usdz
@@ -55,7 +54,6 @@ _build
 
 # RL-Games
 **/runs/*
-**/logs/*
 **/recordings/*
 
 # Pre-Trained Checkpoints

@@ -1,0 +1,469 @@
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py
+	modified:   source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	source/isaac_dodo/isaac_dodo/assets/
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py b/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py
+index 5ce9cc5..981a4ba 100644
+--- a/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py
++++ b/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env.py
+@@ -32,18 +32,13 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
+         self.motor_effort_ratio = torch.ones_like(self.joint_gears, device=self.sim.device)
+         self._joint_dof_idx, _ = self.robot.find_joints(".*")
+ 
+-        # remove positional target; use pure speed+heading targets (per-env)
+-        self.target_forward_speeds = torch.full((self.num_envs,), float(self.cfg.target_forward_speed), device=self.sim.device)
+-        # desired heading (radians, 0 = +x); keep fixed 0 unless randomized elsewhere
+-        self.target_headings = torch.zeros((self.num_envs,), dtype=torch.float32, device=self.sim.device)
+-        self.start_rotation = torch.tensor([1, 0, 0, 0], device=self.sim.device, dtype=torch.float32)
+-        self.up_vec = torch.tensor([0, 0, 1], dtype=torch.float32, device=self.sim.device).repeat((self.num_envs, 1))
+-        self.heading_vec = torch.tensor([1, 0, 0], dtype=torch.float32, device=self.sim.device).repeat(
+-            (self.num_envs, 1)
+-        )
+-        self.inv_start_rot = quat_conjugate(self.start_rotation).repeat((self.num_envs, 1))
+-        self.basis_vec0 = self.heading_vec.clone()
+-        self.basis_vec1 = self.up_vec.clone()
++        lin_low, lin_high = self.cfg.cmd_lin_range
++        ang_low, ang_high = self.cfg.cmd_ang_range
++        self.command_lin = lin_low + (lin_high - lin_low) * torch.rand((self.num_envs, 1), device=self.sim.device)
++        self.command_ang = ang_low + (ang_high - ang_low) * torch.rand((self.num_envs, 1), device=self.sim.device)
++
++        self.applied_torques = torch.zeros((self.num_envs, self.cfg.action_space), dtype=torch.float32, device=self.sim.device)
++        self.prev_actions = torch.zeros((self.num_envs, self.cfg.action_space), dtype=torch.float32, device=self.sim.device)
+ 
+     def _setup_scene(self):
+         self.robot = Articulation(self.cfg.robot)
+@@ -63,64 +58,42 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
+         light_cfg.func("/World/Light", light_cfg)
+ 
+     def _pre_physics_step(self, actions: torch.Tensor):
++        self.prev_actions[:] = getattr(self, "actions", torch.zeros_like(actions))
+         self.actions = actions.clone()
+ 
+     def _apply_action(self):
+         forces = self.action_scale * self.joint_gears * self.actions
++        self.applied_torques = forces.clone()
+         self.robot.set_joint_effort_target(forces, joint_ids=self._joint_dof_idx)
+ 
+     def _compute_intermediate_values(self):
+-        self.torso_position, self.torso_rotation = self.robot.data.root_pos_w, self.robot.data.root_quat_w
+-        self.velocity, self.ang_velocity = self.robot.data.root_lin_vel_w, self.robot.data.root_ang_vel_w
+-        self.dof_pos, self.dof_vel = self.robot.data.joint_pos, self.robot.data.joint_vel
+-
+-        (
+-            self.up_proj,
+-            self.heading_proj,
+-            self.up_vec,
+-            self.heading_vec,
+-            self.vel_loc,
+-            self.angvel_loc,
+-            self.roll,
+-            self.pitch,
+-            self.yaw,
+-            self.angle_to_target,
+-            self.dof_pos_scaled,
+-            self.prev_potentials,
+-            self.potentials,
+-        ) = compute_intermediate_values(
+-            self.targets,
+-            self.torso_position,
+-            self.torso_rotation,
+-            self.velocity,
+-            self.ang_velocity,
+-            self.dof_pos,
+-            self.robot.data.soft_joint_pos_limits[0, :, 0],
+-            self.robot.data.soft_joint_pos_limits[0, :, 1],
+-            self.inv_start_rot,
+-            self.basis_vec0,
+-            self.basis_vec1,
+-            self.potentials,
+-            self.prev_potentials,
+-            self.cfg.sim.dt,
+-        )
++        self.motor_pos = self.robot.data.joint_pos          # 8 joint positions
++        self.motor_vel = self.robot.data.joint_vel          # 8 joint velocities
++        self.motor_tau = self.applied_torques               # 8 joint efforts
++
++        self.base_lin_vel = self.robot.data.root_lin_vel_w  # 3 base linear velocities
++        self.base_ang_vel = self.robot.data.root_ang_vel_w  # 3 base angular velocities
++
++        self.base_position = self.robot.data.root_pos_w     # base position
++        q = self.robot.data.root_quat_w                     # roll, pitch, yaw
++        qw, qx, qy, qz = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
++        self.roll = torch.atan2(2 * (qw * qx + qy * qz), 1 - 2 * (qx * qx + qy * qy))
++        self.pitch = torch.asin(torch.clamp(2 * (qw * qy - qz * qx), -1 + 1e-6, 1 - 1e-6))
++        self.yaw = torch.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+ 
+     def _get_observations(self) -> dict:
+         obs = torch.cat(
+             (
+-                self.torso_position[:, 2].view(-1, 1),
+-                self.vel_loc,
+-                self.ang_velocity * self.cfg.angular_velocity_scale,
+-                normalize_angle(self.yaw).unsqueeze(-1),
+-                normalize_angle(self.roll).unsqueeze(-1),
+-                normalize_angle(self.angle_to_target).unsqueeze(-1),
+-                self.up_proj.unsqueeze(-1),
+-                self.heading_proj.unsqueeze(-1),
+-                self.dof_pos_scaled,
+-                self.dof_vel * self.cfg.dof_vel_scale,
+-                self.actions,
+-                self.target_forward_speeds.unsqueeze(-1),
+-                self.target_headings.unsqueeze(-1),
++                self.motor_pos,
++                self.motor_vel,
++                self.motor_tau,
++                self.base_lin_vel,
++                self.base_ang_vel,
++                self.roll.unsqueeze(-1),
++                self.pitch.unsqueeze(-1),
++                self.yaw.unsqueeze(-1),
++                self.command_lin,
++                self.command_ang,
+             ),
+             dim=-1,
+         )
+@@ -128,172 +101,76 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
+         return observations
+ 
+     def _get_rewards(self) -> torch.Tensor:
+-        total_reward = compute_rewards(
+-            self.actions,
+-            self.reset_terminated,
+-            self.cfg.up_weight,
+-            self.cfg.heading_weight,
+-            self.heading_proj,
+-            self.up_proj,
+-            self.dof_vel,
+-            self.dof_pos_scaled,
+-            self.cfg.actions_cost_scale,
+-            self.cfg.energy_cost_scale,
+-            self.cfg.dof_vel_scale,
+-            self.cfg.death_cost,
+-            self.cfg.alive_reward_scale,
+-            self.motor_effort_ratio,
+-            self.vel_loc,
+-            self.angle_to_target,
+-            self.target_forward_speeds,
+-            float(self.cfg.vel_tracking_weight),
+-            float(self.cfg.dir_tracking_weight),
+-        )
++        self._compute_intermediate_values()
++
++        # linear and angular velocity tracking
++        v_forward = torch.sqrt(self.base_lin_vel[:, 0] ** 2 + self.base_lin_vel[:, 1] ** 2)
++        v_command = self.command_lin.squeeze(-1)
++        w_yaw = self.base_ang_vel[:, 2]
++        w_command = self.command_ang.squeeze(-1)
++
++        lin_vel_err_sq = (v_forward - v_command) ** 2
++        r_lin = self.cfg.reward_lin_vel_w * torch.exp(-lin_vel_err_sq / (2 * self.cfg.lin_vel_sigma ** 2))
++        ang_vel_err_sq = (w_yaw - w_command) ** 2
++        r_ang = self.cfg.reward_ang_vel_w * torch.exp(-ang_vel_err_sq / (2 * self.cfg.ang_vel_sigma ** 2))
++
++        # orientation reward
++        orient_err_sq = self.roll ** 2 + self.pitch ** 2
++        r_orient = self.cfg.reward_orientation_w * torch.exp(-orient_err_sq / (2 * self.cfg.orientation_sigma ** 2))
++
++        # energy regularization
++        torque_mag = torch.sum(torch.abs(self.motor_tau), dim=1)           # L1
++        max_possible = torch.sum(self.joint_gears) * self.action_scale
++        r_torque = self.cfg.reward_torque_reg_w * (1.0 - torque_mag / (max_possible + 1e-6)).clamp(min=0.0)
++
++        # action rate regularization
++        action_diff_sq = torch.mean((self.actions - self.prev_actions) ** 2, dim=1)
++        r_action_rate = self.cfg.reward_action_rate_w * torch.exp(-action_diff_sq / (2 * self.cfg.action_rate_sigma ** 2))
++
++        # alive 
++        r_alive = torch.ones(self.num_envs, device=self.sim.device) * self.cfg.reward_alive_w
++
++        # failure penalty
++        height_failure = self.base_position[:, 2] < self.cfg.termination_height
++        roll_failure = torch.abs(self.roll) > self.cfg.termination_roll
++        pitch_failure = torch.abs(self.pitch) > self.cfg.termination_pitch
++        failure = height_failure | roll_failure | pitch_failure
++        p_fail = failure.float() * self.cfg.reward_failure_penalty
++
++        # total reward
++        total_reward = r_lin + r_ang + r_orient + r_torque + r_action_rate + r_alive + p_fail
++
+         return total_reward
+ 
+     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+         self._compute_intermediate_values()
+         time_out = self.episode_length_buf >= self.max_episode_length - 1
+-        died = self.torso_position[:, 2] < self.cfg.termination_height
+-        return time_out, died
++        height_failure = self.base_position[:, 2] < self.cfg.termination_height
++        roll_failure = torch.abs(self.roll) > self.cfg.termination_roll
++        pitch_failure = torch.abs(self.pitch) > self.cfg.termination_pitch
++        died = height_failure | roll_failure | pitch_failure
++        return died, time_out
+ 
+     def _reset_idx(self, env_ids: torch.Tensor | None):
+-        # ensure env_ids is a valid index tensor for per-env operations
+-        if env_ids is None:
+-            env_ids = torch.arange(self.num_envs, device=self.sim.device, dtype=torch.long)
++        if env_ids is None or len(env_ids) == self.num_envs:
++            env_ids = self.robot._ALL_INDICES
+         self.robot.reset(env_ids)
+         super()._reset_idx(env_ids)
+ 
++        # reset robot state
+         joint_pos = self.robot.data.default_joint_pos[env_ids]
+         joint_vel = self.robot.data.default_joint_vel[env_ids]
+-        default_root_state = self.robot.data.default_root_state[env_ids]
+-        default_root_state[:, :3] += self.scene.env_origins[env_ids]
+-
+-        self.robot.write_root_pose_to_sim(default_root_state[:, :7], env_ids)
+-        self.robot.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
++        root_state = self.robot.data.default_root_state[env_ids]
++        root_state[:, :3] += self.scene.env_origins[env_ids]
++        self.robot.write_root_pose_to_sim(root_state[:, :7], env_ids)
++        self.robot.write_root_velocity_to_sim(root_state[:, 7:], env_ids)
+         self.robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
+ 
+-        # ensure per-env targets exist for reset envs
+-        # initial randomization: speed in [-1, 2] m/s, heading in [0, 2*pi)
+-        self.target_forward_speeds[env_ids] = torch.empty(
+-            len(env_ids), device=self.sim.device
+-        ).uniform_(-2.0, 2.0)
+-        self.target_headings[env_ids] = torch.empty(
+-            len(env_ids), device=self.sim.device
+-        ).uniform_(0.0, 2.0 * math.pi)
++        # new command
++        lin_low, lin_high = self.cfg.cmd_lin_range
++        ang_low, ang_high = self.cfg.cmd_ang_range
++        self.command_lin[env_ids] = lin_low + (lin_high - lin_low) * torch.rand((len(env_ids), 1), device=self.sim.device)
++        self.command_ang[env_ids] = ang_low + (ang_high - ang_low) * torch.rand((len(env_ids), 1), device=self.sim.device)
+ 
++        self.applied_torques[env_ids] = 0.0
+         self._compute_intermediate_values()
+-
+-
+-@torch.jit.script
+-def compute_rewards(
+-    actions: torch.Tensor,
+-    reset_terminated: torch.Tensor,
+-    up_weight: float,
+-    heading_weight: float,
+-    heading_proj: torch.Tensor,
+-    up_proj: torch.Tensor,
+-    dof_vel: torch.Tensor,
+-    dof_pos_scaled: torch.Tensor,
+-    actions_cost_scale: float,
+-    energy_cost_scale: float,
+-    dof_vel_scale: float,
+-    death_cost: float,
+-    alive_reward_scale: float,
+-    motor_effort_ratio: torch.Tensor,
+-    vel_loc: torch.Tensor,
+-    angle_to_target: torch.Tensor,
+-    target_forward_speed: torch.Tensor,
+-    vel_tracking_weight: float,
+-    dir_tracking_weight: float,
+-):
+-    heading_weight_tensor = torch.ones_like(heading_proj) * heading_weight
+-    heading_reward = torch.where(heading_proj > 0.8, heading_weight_tensor, heading_weight * heading_proj / 0.8)
+-
+-    # aligning up axis of robot and environment
+-    up_reward = torch.zeros_like(heading_reward)
+-    up_reward = torch.where(up_proj > 0.95, up_reward + up_weight, up_reward)
+-
+-    # energy / action penalties
+-    actions_cost = torch.sum(actions**2, dim=-1)
+-    electricity_cost = torch.sum(
+-        torch.abs(actions * dof_vel * dof_vel_scale) * motor_effort_ratio.unsqueeze(0),
+-        dim=-1,
+-    )
+-    dof_at_limit_cost = torch.sum(dof_pos_scaled > 0.98, dim=-1)
+-
+-    # alive reward (per step)
+-    alive_reward = torch.ones_like(heading_proj) * alive_reward_scale
+-
+-    # velocity tracking (forward axis = x in local frame)
+-    vel_forward = vel_loc[:, 0]
+-    vel_err = vel_forward - target_forward_speed
+-    vel_tracking_reward = -vel_tracking_weight * (vel_err * vel_err)
+-
+-    # direction tracking: cosine of heading error
+-    dir_tracking_reward = dir_tracking_weight * torch.cos(angle_to_target)
+-
+-    total_reward = (
+-        vel_tracking_reward
+-        + dir_tracking_reward
+-        + alive_reward
+-        + up_reward
+-        + heading_reward
+-        - actions_cost_scale * actions_cost
+-        - energy_cost_scale * electricity_cost
+-        - dof_at_limit_cost
+-    )
+-    total_reward = torch.where(reset_terminated, torch.ones_like(total_reward) * death_cost, total_reward)
+-    return total_reward
+-
+-
+-@torch.jit.script
+-def compute_intermediate_values(
+-    targets: torch.Tensor,
+-    torso_position: torch.Tensor,
+-    torso_rotation: torch.Tensor,
+-    velocity: torch.Tensor,
+-    ang_velocity: torch.Tensor,
+-    dof_pos: torch.Tensor,
+-    dof_lower_limits: torch.Tensor,
+-    dof_upper_limits: torch.Tensor,
+-    inv_start_rot: torch.Tensor,
+-    basis_vec0: torch.Tensor,
+-    basis_vec1: torch.Tensor,
+-    potentials: torch.Tensor,
+-    prev_potentials: torch.Tensor,
+-    dt: float,
+-):
+-    to_target = targets - torso_position
+-    to_target[:, 2] = 0.0
+-
+-    torso_quat, up_proj, heading_proj, up_vec, heading_vec = compute_heading_and_up(
+-        torso_rotation, inv_start_rot, to_target, basis_vec0, basis_vec1, 2
+-    )
+-
+-    vel_loc, angvel_loc, roll, pitch, yaw, angle_to_target = compute_rot(
+-        torso_quat, velocity, ang_velocity, targets, torso_position
+-    )
+-
+-    dof_pos_scaled = torch_utils.maths.unscale(dof_pos, dof_lower_limits, dof_upper_limits)
+-
+-    to_target = targets - torso_position
+-    to_target[:, 2] = 0.0
+-    prev_potentials[:] = potentials
+-    potentials = -torch.norm(to_target, p=2, dim=-1) / dt
+-
+-    return (
+-        up_proj,
+-        heading_proj,
+-        up_vec,
+-        heading_vec,
+-        vel_loc,
+-        angvel_loc,
+-        roll,
+-        pitch,
+-        yaw,
+-        angle_to_target,
+-        dof_pos_scaled,
+-        prev_potentials,
+-        potentials,
+-    )
+diff --git a/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py b/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py
+index 0f909fb..e4e3613 100644
+--- a/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py
++++ b/source/isaac_dodo/isaac_dodo/tasks/direct/dodo_velocity_tracking/dodo_velocity_tracking_env_cfg.py
+@@ -3,7 +3,7 @@
+ #
+ # SPDX-License-Identifier: BSD-3-Clause
+ 
+-from isaaclab_assets import HUMANOID_CFG
++from isaac_dodo.assets.robots.dodo import DODO_CFG
+ 
+ import isaaclab.sim as sim_utils
+ from isaaclab.assets import ArticulationCfg
+@@ -20,9 +20,17 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
+     episode_length_s = 15.0
+     decimation = 2
+     action_scale = 1.0
+-    action_space = 21
+-    observation_space = 77
+-    state_space = 2
++    action_space = 8
++    observation_space = 35
++    # 8 joint positions
++    # 8 joint velocities
++    # 8 joint efforts
++    # 3 base linear velocities
++    # 3 base angular velocities
++    # roll, pitch, yaw
++    # linear velocity command (1 dim)
++    # angular velocity command (1 dim)
++    state_space = 0
+ 
+     # simulation
+     sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
+@@ -46,44 +54,30 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
+     )
+ 
+     # robot
+-    robot: ArticulationCfg = HUMANOID_CFG.replace(prim_path="/World/envs/env_.*/Robot")
++    robot: ArticulationCfg = DODO_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+     joint_gears: list = [
+-        67.5000,  # lower_waist
+-        67.5000,  # lower_waist
+-        67.5000,  # right_upper_arm
+-        67.5000,  # right_upper_arm
+-        67.5000,  # left_upper_arm
+-        67.5000,  # left_upper_arm
+-        67.5000,  # pelvis
+-        45.0000,  # right_lower_arm
+-        45.0000,  # left_lower_arm
+-        45.0000,  # right_thigh: x
+-        135.0000,  # right_thigh: y
+-        45.0000,  # right_thigh: z
+-        45.0000,  # left_thigh: x
+-        135.0000,  # left_thigh: y
+-        45.0000,  # left_thigh: z
+-        90.0000,  # right_knee
+-        90.0000,  # left_knee
+-        22.5,  # right_foot
+-        22.5,  # right_foot
+-        22.5,  # left_foot
+-        22.5,  # left_foot
++        2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5, 2.5
+     ]
+-    target_forward_speed: float = 1.0
+-    vel_tracking_weight: float = 3.0
+-    dir_tracking_weight: float = 2.5
+ 
+-    heading_weight: float = 0.5
+-    up_weight: float = 0.1
++    # task
++    cmd_lin_range = [-1.0, 1.0]  # m/s
++    cmd_ang_range = [-1.0, 1.0]  # rad/s
+ 
+-    energy_cost_scale: float = 0.05
+-    actions_cost_scale: float = 0.01
+-    alive_reward_scale: float = 2.0
+-    dof_vel_scale: float = 0.1
++    termination_height = 0.3  # m
++    termination_roll = 1.0  # rad
++    termination_pitch = 1.0  # rad
+ 
+-    death_cost: float = -1.0
+-    termination_height: float = 1.1
++    # reward scales
++    reward_lin_vel_w = 2.0
++    reward_ang_vel_w = 2.0
++    reward_orientation_w = 0.5
++    reward_torque_reg_w = 0.01
++    reward_action_rate_w = 0.05
++    reward_alive_w = 0.2
++    reward_failure_penalty = -100.0
+ 
+-    angular_velocity_scale: float = 0.25
+-    contact_force_scale: float = 0.01
+\ No newline at end of file
++    # shaping sigmas
++    lin_vel_sigma = 0.5
++    ang_vel_sigma = 0.5
++    orientation_sigma = 0.5
++    action_rate_sigma = 0.2
