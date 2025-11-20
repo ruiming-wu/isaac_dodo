@@ -19,8 +19,8 @@ from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 
-import dodo_manage.tasks.manager_based.dodo_manage.mdp as mdp
-from isaac_dodo.isaac_dodo.assets.robots.dodo import DODO_CFG
+import isaac_dodo.tasks.manager_based.dodo_manage.mdp as mdp
+from isaac_dodo.assets.robots.dodo import DODO_CFG
 
 ##
 # Scene definition

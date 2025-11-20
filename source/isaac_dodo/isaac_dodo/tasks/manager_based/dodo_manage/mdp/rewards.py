@@ -17,7 +17,7 @@ from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
 
-import dodo_manage.tasks.manager_based.dodo_manage.mdp.observations as obs
+import isaac_dodo.tasks.manager_based.dodo_manage.mdp.observations as obs
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv

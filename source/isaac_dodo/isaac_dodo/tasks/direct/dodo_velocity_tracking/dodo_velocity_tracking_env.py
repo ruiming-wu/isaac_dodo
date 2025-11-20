@@ -90,7 +90,7 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
 
         self.body_pos_w = self.robot.data.body_pos_w
         feet_z = self.body_pos_w[:, self._feet_body_ids, 2]
-        feet_in_air = feet_z > 0.05
+        feet_in_air = feet_z > 0.10
         self.num_feet_in_air = torch.sum(feet_in_air.float(), dim=1)
 
     def _get_observations(self) -> dict:
@@ -140,6 +140,12 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         action_diff_sq = torch.mean((self.actions - self.prev_actions) ** 2, dim=1)
         r_action_rate = self.cfg.reward_action_rate_w * torch.exp(-action_diff_sq / (2 * self.cfg.action_rate_sigma ** 2))
 
+        # reward of knee angle
+        left_knee_angle = self.motor_pos[:, 2]
+        right_knee_angle = self.motor_pos[:, 5]
+        knee_angle_err_sq = (left_knee_angle - self.cfg.knee_angle_goal) ** 2 + (right_knee_angle - self.cfg.knee_angle_goal) ** 2
+        r_knee_angle = self.cfg.reward_knee_angle * torch.exp(-knee_angle_err_sq / (2 * self.cfg.knee_angle_sigma ** 2))
+
         # alive 
         r_alive = torch.ones(self.num_envs, device=self.sim.device) * self.cfg.reward_alive_w
 
@@ -151,7 +157,11 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         p_fail = failure.float() * self.cfg.reward_failure_penalty
 
         # foot in air reward
-        r_foot_in_air = self.cfg.reward_foot_in_air * (self.num_feet_in_air / len(self._feet_body_ids))
+        # reward if exactly one foot is in the air; penalize otherwise (both on ground or both in air)
+        one_foot_mask = (self.num_feet_in_air == 1)
+        pos_val = torch.full_like(self.num_feet_in_air, self.cfg.reward_foot_in_air)
+        neg_val = torch.full_like(self.num_feet_in_air, -self.cfg.reward_foot_in_air)
+        r_foot_in_air = torch.where(one_foot_mask, pos_val, neg_val)
 
         # total reward
         total_reward = r_lin + r_ang + r_orient + r_torque + r_action_rate + r_alive + p_fail + r_foot_in_air

@@ -1,0 +1,47 @@
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/dodo_manage_env_cfg.py
+	modified:   source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/mdp/rewards.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	logs/rsl_rl/dodo_velocity_tracking_ppo/2025-11-13_19-00-19/exported/
+	logs/rsl_rl/dodo_velocity_tracking_ppo/2025-11-20_16-56-29/
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/dodo_manage_env_cfg.py b/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/dodo_manage_env_cfg.py
+index c3c8b0c..8978dc5 100644
+--- a/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/dodo_manage_env_cfg.py
++++ b/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/dodo_manage_env_cfg.py
+@@ -19,8 +19,8 @@ from isaaclab.sensors import ContactSensorCfg
+ from isaaclab.terrains import TerrainImporterCfg
+ from isaaclab.utils import configclass
+ 
+-import dodo_manage.tasks.manager_based.dodo_manage.mdp as mdp
+-from isaac_dodo.isaac_dodo.assets.robots.dodo import DODO_CFG
++import isaac_dodo.tasks.manager_based.dodo_manage.mdp as mdp
++from isaac_dodo.assets.robots.dodo import DODO_CFG
+ 
+ ##
+ # Scene definition
+diff --git a/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/mdp/rewards.py b/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/mdp/rewards.py
+index 8efe831..e796861 100644
+--- a/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/mdp/rewards.py
++++ b/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/mdp/rewards.py
+@@ -17,7 +17,7 @@ from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
+ from isaaclab.utils.math import quat_apply_inverse, yaw_quat
+ 
+ 
+-import dodo_manage.tasks.manager_based.dodo_manage.mdp.observations as obs
++import isaac_dodo.tasks.manager_based.dodo_manage.mdp.observations as obs
+ 
+ if TYPE_CHECKING:
+     from isaaclab.envs import ManagerBasedRLEnv
