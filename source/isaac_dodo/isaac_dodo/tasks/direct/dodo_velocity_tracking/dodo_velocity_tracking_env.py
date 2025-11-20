@@ -47,6 +47,12 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
                                f"Please set cfg.foot_link_names to your actual foot body names.")
         self._feet_body_ids = torch.as_tensor(feet_ids, dtype=torch.long, device=self.sim.device)
 
+        # per-env foot phase bookkeeping
+        # foot_last: 0 = none, 1 = left, 2 = right, 3 = both
+        self.foot_hold_counts = torch.zeros(self.num_envs, dtype=torch.int32, device=self.sim.device)
+        self.foot_last = torch.zeros(self.num_envs, dtype=torch.int8, device=self.sim.device)
+        self.foot_switched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.sim.device)
+
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
         # add ground plane
@@ -92,6 +98,26 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         feet_z = self.body_pos_w[:, self._feet_body_ids, 2]
         feet_in_air = feet_z > 0.10
         self.num_feet_in_air = torch.sum(feet_in_air.float(), dim=1)
+
+        # update foot phase bookkeeping
+        # compute current state per env: 0 none, 1 left only, 2 right only, 3 both
+        left_in_air = feet_in_air[:, 0]
+        right_in_air = feet_in_air[:, 1]
+        prev_last = getattr(self, "foot_last", torch.zeros(self.num_envs, dtype=torch.int8, device=self.sim.device))
+        current_state = torch.zeros(self.num_envs, dtype=torch.int8, device=self.sim.device)
+        current_state[(left_in_air & ~right_in_air)] = 1
+        current_state[(~left_in_air & right_in_air)] = 2
+        current_state[(left_in_air & right_in_air)] = 3
+
+        mask_one = (current_state == 1) | (current_state == 2)
+        same_mask = (current_state == prev_last) & mask_one
+
+        # increment counters for same single-foot-hold, reset otherwise
+        self.foot_hold_counts = torch.where(same_mask, self.foot_hold_counts + 1, torch.zeros_like(self.foot_hold_counts))
+        # flag if a switch happened into a single-foot state this step
+        self.foot_switched = (current_state != prev_last) & mask_one
+        # store last state
+        self.foot_last = current_state
 
     def _get_observations(self) -> dict:
         self._compute_intermediate_values()
@@ -163,8 +189,24 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
         neg_val = torch.full_like(self.num_feet_in_air, -self.cfg.reward_foot_in_air)
         r_foot_in_air = torch.where(one_foot_mask, pos_val, neg_val)
 
+        # foot switch incentives / hold penalty
+        # reward when a valid foot switch occurs, penalize when the same foot is held too long
+        r_switch = self.cfg.reward_foot_switch * self.foot_switched.float()
+        p_hold = -self.cfg.foot_hold_penalty * (self.foot_hold_counts > self.cfg.max_foot_hold_frames).float()
+
         # total reward
-        total_reward = r_lin + r_ang + r_orient + r_torque + r_action_rate + r_alive + p_fail + r_foot_in_air
+        total_reward = (
+            r_lin
+            + r_ang
+            + r_orient
+            + r_torque
+            + r_action_rate
+            + r_alive
+            + p_fail
+            + r_foot_in_air
+            + r_switch
+            + p_hold
+        )
 
         return total_reward
 
@@ -200,3 +242,9 @@ class DodoVelocityTrackingEnv(LocomotionEnv):
 
         self.applied_torques[env_ids] = 0.0
         self._compute_intermediate_values()
+
+        # reset foot bookkeeping for reset envs
+        if hasattr(self, "foot_hold_counts"):
+            self.foot_hold_counts[env_ids] = 0
+            self.foot_last[env_ids] = 0
+            self.foot_switched[env_ids] = False

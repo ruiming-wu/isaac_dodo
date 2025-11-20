@@ -79,9 +79,13 @@ class DodoVelocityTrackingEnvCfg(DirectRLEnvCfg):
     reward_torque_reg_w = 0.01
     reward_action_rate_w = 0.05
     reward_alive_w = 0.2
-    reward_knee_angle = 0.8
-    reward_foot_in_air = 2.0
-    reward_failure_penalty = -20.0
+    reward_knee_angle = 3.0
+    reward_foot_in_air = 0.5
+    # foot phase switching config
+    max_foot_hold_frames: int = 20          # 最大允许同一只脚连续悬空的帧数
+    foot_hold_penalty: float = 5.0         # 超过上限时惩罚
+    reward_foot_switch: float = 1.0        # 成功切换脚时的奖励
+    reward_failure_penalty = -50.0
 
     # shaping sigmas
     lin_vel_sigma = 0.5
