@@ -13,11 +13,11 @@ from . import agents
 
 
 gym.register(
-    id="Template-Test-Isaac-v0",
+    id="Template-Dodo-Manage-v0",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.isaac_dodo_env_cfg:TestIsaacEnvCfg",
+        "env_cfg_entry_point": f"{__name__}.dodo_manage_env_cfg:DodoManageEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
     },
 )
