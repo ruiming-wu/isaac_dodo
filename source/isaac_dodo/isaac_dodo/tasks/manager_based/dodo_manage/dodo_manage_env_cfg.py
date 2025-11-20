@@ -207,22 +207,20 @@ class RewardsCfg:
 
 # 自己编写的
     # 前进进度奖励
-    progress = RewTerm(func=mdp.progress_reward, weight=1.0, params={"target_pos": (1000.0, 0.0, 0.0)})
+    # progress = RewTerm(func=mdp.progress_reward, weight=1.0, params={"target_pos": (1000.0, 0.0, 0.0)})
     # 直立姿态奖励 
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.5, params={"threshold": 0.5})
     # 朝向目标奖励
-    move_to_target = RewTerm(
-        func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (1000.0, 0.0, 0.0)}
-    )
+    # move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (1000.0, 0.0, 0.0)})
     # 线速度跟踪
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=3.0,
+        weight=6.0,
         params={"command_name": "base_velocity", "std": 0.4},
     )
     # 角速度跟踪
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_world_exp, weight=3.0, params={"command_name": "base_velocity", "std": 0.4}
+        func=mdp.track_ang_vel_z_world_exp, weight=6.0, params={"command_name": "base_velocity", "std": 0.4}
     )
     # 能耗惩罚
     energy = RewTerm(
@@ -263,11 +261,11 @@ class TerminationsCfg:
     torso_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.3})
     roll_threshold = DoneTerm(
         func=mdp.bad_orientation,
-        params={"asset_cfg": SceneEntityCfg("robot"), "axis":0, "limit_angle": 0.8},
+        params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 0.8},
     )
     pitch_threshold = DoneTerm(
         func=mdp.bad_orientation,
-        params={"asset_cfg": SceneEntityCfg("robot"), "axis":1, "limit_angle": 0.8},
+        params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 0.8},
     )
 
 
