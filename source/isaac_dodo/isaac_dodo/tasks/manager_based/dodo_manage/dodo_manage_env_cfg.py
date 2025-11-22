@@ -209,7 +209,7 @@ class RewardsCfg:
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01) # 惩罚过大的动作
 
     # 髋关节移位置惩罚
-    hip_joint_move = RewTerm(func=mdp.joint_pos_softlimit,
+    hip_joint_move = RewTerm(func=mdp.hip_pos_manual_limit,
         weight=-10.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_1", "right_joint_1"]),
@@ -285,6 +285,11 @@ class TerminationsCfg:
     pitch_threshold = DoneTerm(
         func=mdp.bad_orientation,
         params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 0.8},
+    )
+
+    hip_threshold = DoneTerm(
+        func=mdp.joint_pos_out_of_manual_limit,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_1", "right_joint_1"]), "bounds": [-0.15, 0.15]},
     )
 
 

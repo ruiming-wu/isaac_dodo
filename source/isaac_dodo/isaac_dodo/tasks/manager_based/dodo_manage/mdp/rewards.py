@@ -42,21 +42,19 @@ def move_to_target_bonus(
     return torch.where(heading_proj > threshold, 1.0, heading_proj / threshold)
 
 
-def joint_pos_softlimit(env: ManagerBasedRLEnv, softlimit: tuple[float, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), ) -> torch.Tensor:
+def hip_pos_manual_limit(env: ManagerBasedRLEnv, softlimit: tuple[float, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), ) -> torch.Tensor:
     """Penalize joint positions if they cross the soft limits.
 
     This is computed as a sum of the absolute value of the difference between the joint position and the soft limits.
     """
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
+    hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
     # compute out of limits constraints
-    out_of_limits = -(
-        asset.data.joint_pos[:, asset_cfg.joint_ids] - softlimit[0]
-    ).clip(max=0.0)
-    out_of_limits += (
-        asset.data.joint_pos[:, asset_cfg.joint_ids] - softlimit[1]
-    ).clip(min=0.0)
-    return torch.sum(out_of_limits, dim=1)
+    left_violation = -(hip_pos[:, 0] - softlimit[0]).clip(max=0.0)
+    right_violation = -(hip_pos[:, 1] - softlimit[1]).clip(max=0.0)
+    violations = torch.stack([left_violation, right_violation], dim=1)
+    return torch.sum(violations, dim=1)
 
 def feet_air_time_positive_biped_snesor(env, command_name: str, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """鼓励双足机器人单脚支撑，另一脚摆动（需要配备传感器）"""
