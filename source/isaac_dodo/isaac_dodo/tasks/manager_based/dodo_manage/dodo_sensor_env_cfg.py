@@ -28,7 +28,7 @@ from isaac_dodo.assets.robots.dodo import DODO_CFG
 
 
 @configclass
-class DodoManageSceneCfg(InteractiveSceneCfg):
+class DodowithsensorSceneCfg(InteractiveSceneCfg):
     """Configuration for the terrain scene with a humanoid robot."""
 
     # terrain
@@ -82,9 +82,11 @@ class DodoManageSceneCfg(InteractiveSceneCfg):
                 velocity_limit_sim=5.0,
             )
         },
-
-        
     )
+
+    # sensors
+    contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
+
 
     # lights
     light = AssetBaseCfg(
@@ -139,9 +141,15 @@ class ObservationsCfg:
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # 观测机器人基座的线性速度(包含x、y、z三个方向)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.25) # 基座的角速度(使用scale进行归一化缩放)        
         # 关节状态
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_pos_norm = ObsTerm(func=mdp.joint_pos_limit_normalized) 
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.1)
+
+        # 接触力
+        feet_body_forces = ObsTerm(
+            func=mdp.body_incoming_wrench,
+            scale=0.01,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=["left_link_4", "right_link_4"])},
+        )
 
         actions = ObsTerm(func=mdp.last_action)
 
@@ -172,9 +180,7 @@ class EventCfg:
     reset_base = EventTerm(
         func=mdp.reset_root_state_uniform,
         mode="reset",
-        params={"pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (0.4, 0.6)},
-            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.5, 0.5)},
-        },
+        params={"pose_range": {}, "velocity_range": {}},
     )
 
     reset_robot_joints = EventTerm(
@@ -206,12 +212,12 @@ class RewardsCfg:
     # 线速度跟踪
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=6.0,
+        weight=10.0,
         params={"command_name": "base_velocity", "std": 0.4},
     )
     # 角速度跟踪
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_world_exp, weight=4.0, params={"command_name": "base_velocity", "std": 0.4}
+        func=mdp.track_ang_vel_z_world_exp, weight=6.0, params={"command_name": "base_velocity", "std": 0.4}
     )
     # 能耗惩罚
     energy = RewTerm(
@@ -231,14 +237,15 @@ class RewardsCfg:
         },
     )
 
-    # 髋关节移动惩罚
-    hip_joint_move = RewTerm(func=mdp.joint_pos_limits,
-        weight=-0.05,
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_positive_biped,
+        weight=10.0,
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_joint_1"])
+            "command_name": "base_velocity",
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+            "threshold": 0.4,
         },
     )
-
 
 
 @configclass
@@ -260,11 +267,11 @@ class TerminationsCfg:
 
 
 @configclass
-class DodoManageEnvCfg(ManagerBasedRLEnvCfg):
+class DodowithsensorEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the MuJoCo-style Humanoid walking environment."""
 
     # Scene settings
-    scene: DodoManageSceneCfg = DodoManageSceneCfg(num_envs=4096, env_spacing=5.0)
+    scene: DodowithsensorSceneCfg = DodowithsensorSceneCfg(num_envs=4096, env_spacing=5.0)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
