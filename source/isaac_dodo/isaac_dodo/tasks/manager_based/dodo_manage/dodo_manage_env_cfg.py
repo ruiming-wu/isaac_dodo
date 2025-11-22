@@ -110,6 +110,7 @@ class CommandsCfg:
     )
 
 
+
 ##
 # MDP settings
 ##
@@ -139,6 +140,7 @@ class ObservationsCfg:
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # 观测机器人基座的线性速度(包含x、y、z三个方向)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.25) # 基座的角速度(使用scale进行归一化缩放)        
         # 关节状态
+        joint_pos = ObsTerm(func=mdp.joint_pos)
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_pos_norm = ObsTerm(func=mdp.joint_pos_limit_normalized) 
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.1)
@@ -150,12 +152,22 @@ class ObservationsCfg:
         base_up_proj = ObsTerm(func=mdp.base_up_proj) # 机器人向上方向与世界坐标系z轴的投影关系，用于判断机器人是否保持直立姿态
         base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
             func=mdp.base_heading_proj, 
-            params={"target_pos": (1000.0, 0.0, 0.0)}
+            params={"target_pos": (0.0, 1000.0,  0.0)}
         )
         base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
             func=mdp.base_angle_to_target, 
-            params={"target_pos": (1000.0, 0.0, 0.0)} # 目标坐标位置
+            params={"target_pos": (0.0, 1000.0, 0.0)} # 目标坐标位置
         )
+
+        # # 行走判断
+        # walking_indicator = ObsTerm(func=mdp.is_walking_indicator, 
+        #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_3","right_joint_3"])}
+        # )
+        # # 行走步态
+        # gait_phase = ObsTerm(func=mdp.gait_phase_from_knees,
+        #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_3","right_joint_3"])}
+        # )
+
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -193,52 +205,69 @@ class RewardsCfg:
 
 # isaaclab自带
     alive = RewTerm(func=mdp.is_alive, weight=2.0) # 存活奖励
-    termination = RewTerm(func=mdp.is_terminated, weight=-20.0) # 结束惩罚
+    termination = RewTerm(func=mdp.is_terminated, weight=-10.0) # 结束惩罚
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01) # 惩罚过大的动作
+
+    # 髋关节移位置惩罚
+    hip_joint_move = RewTerm(func=mdp.joint_pos_softlimit,
+        weight=-10.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_1", "right_joint_1"]),
+            "softlimit": (0, 0),
+        },
+    )
+
+    # # 膝关节位置奖励
+    # knee_joint_move = RewTerm(func=mdp.joint_pos_limits,
+    #     weight=3.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_joint_3"])
+    #     },
+    # )
+
+    # # 鼓励膝关节运动速度
+    # knee_joint_velocity = RewTerm(
+    #     func=mdp.joint_vel_l2,
+    #     weight=3.0,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_joint_3"])
+    #     },
+    # )
 
 # 自己编写的
     # 前进进度奖励
-    # progress = RewTerm(func=mdp.progress_reward, weight=1.0, params={"target_pos": (1000.0, 0.0, 0.0)})
+    progress = RewTerm(func=mdp.progress_reward, weight=1.0, params={"target_pos": (0.0, 1000.0, 0.0)})
     # 直立姿态奖励 
-    upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.5, params={"threshold": 0.5})
+    upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.5, params={"threshold": 0.45})
     # 朝向目标奖励
-    # move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (1000.0, 0.0, 0.0)})
+    move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (0.0, 1000.0, 0.0)})
     # 线速度跟踪
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=6.0,
-        params={"command_name": "base_velocity", "std": 0.4},
+        func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=3.0,
+        params={"command_name": "base_velocity", "std": 0.3},
     )
     # 角速度跟踪
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_world_exp, weight=4.0, params={"command_name": "base_velocity", "std": 0.4}
+        func=mdp.track_ang_vel_z_world_exp, weight=3.0, params={"command_name": "base_velocity", "std": 0.3}
     )
     # 能耗惩罚
     energy = RewTerm(
-        func=mdp.power_consumption,
-        weight=-0.005,
-        params={
-            "gear_ratio": {".*": 2.5}
-        },
+        func=mdp.power_consumption, weight=-0.005,
+        params={"gear_ratio": {".*": 2.5}},
     )
     # 关节极限惩罚
     joint_pos_limits = RewTerm(
-        func=mdp.joint_pos_limits_penalty_ratio,
-        weight=-0.25,
-        params={
-            "threshold": 0.98,
-            "gear_ratio": {".*": 2.5}
-        },
+        func=mdp.joint_pos_limits_penalty_ratio, weight=-0.25,
+        params={"threshold": 0.98, "gear_ratio": {".*": 2.5}},
     )
 
-    # 髋关节移动惩罚
-    hip_joint_move = RewTerm(func=mdp.joint_pos_limits,
-        weight=-0.05,
+    feet_air_time = RewTerm(
+        func=mdp.feet_air_time_positive_biped, weight=3,
         params={
-            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_joint_1"])
-        },
+            "command_name": "base_velocity",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_2","right_joint_2","left_joint_3","right_joint_3"]),
+            "threshold": 10}
     )
-
 
 
 @configclass
