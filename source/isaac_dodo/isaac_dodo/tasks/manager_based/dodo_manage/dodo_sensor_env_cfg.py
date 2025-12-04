@@ -170,7 +170,8 @@ class ObservationsCfg:
             self.concatenate_terms = True
 
     # observation groups
-    policy: PolicyCfg = PolicyCfg()
+    policy: ObsGroup = PolicyCfg()
+
 
 
 @configclass
@@ -238,7 +239,7 @@ class RewardsCfg:
     )
 
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped,
+        func=mdp.feet_air_time_positive_biped_snesor,
         weight=10.0,
         params={
             "command_name": "base_velocity",

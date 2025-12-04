@@ -11,8 +11,8 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 16
-    max_iterations = 150
-    save_interval = 50
+    max_iterations = 1500
+    save_interval = 100
     experiment_name = "dodo_managed_ppo"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(

@@ -86,6 +86,9 @@ class DodoManageSceneCfg(InteractiveSceneCfg):
         
     )
 
+    # sensors
+    contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
+
     # lights
     light = AssetBaseCfg(
         prim_path="/World/light",
@@ -152,29 +155,56 @@ class ObservationsCfg:
         base_up_proj = ObsTerm(func=mdp.base_up_proj) # 机器人向上方向与世界坐标系z轴的投影关系，用于判断机器人是否保持直立姿态
         base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
             func=mdp.base_heading_proj, 
-            params={"target_pos": (0.0, 1000.0,  0.0)}
+            params={"target_pos": (1000.0, 0.0,  0.0)}
         )
         base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
             func=mdp.base_angle_to_target, 
-            params={"target_pos": (0.0, 1000.0, 0.0)} # 目标坐标位置
+            params={"target_pos": (1000.0, 0.0, 0.0)} # 目标坐标位置
         )
 
-        # # 行走判断
-        # walking_indicator = ObsTerm(func=mdp.is_walking_indicator, 
-        #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_3","right_joint_3"])}
-        # )
-        # # 行走步态
-        # gait_phase = ObsTerm(func=mdp.gait_phase_from_knees,
-        #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_3","right_joint_3"])}
-        # )
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
 
+    @configclass
+    class CriticCfg(ObsGroup):
+        """Test config class for critic observation group"""
+    # isaaclab自带
+        base_height = ObsTerm(func=mdp.base_pos_z) # 观测机器人基座的高度（z坐标）
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # 观测机器人基座的线性速度(包含x、y、z三个方向)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.25) # 基座的角速度(使用scale进行归一化缩放)        
+        # 关节状态
+        joint_pos_norm = ObsTerm(func=mdp.joint_pos_limit_normalized) 
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.1)
+
+        # 接触力
+        feet_body_forces = ObsTerm(
+            func=mdp.body_incoming_wrench,
+            scale=0.01,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=["left_link_4", "right_link_4"])},
+        )
+
+        actions = ObsTerm(func=mdp.last_action)
+
+    # 自己编写的
+        base_yaw_roll = ObsTerm(func=mdp.base_yaw_roll) # 机器人的偏航角(yaw)和翻滚角(roll)
+        base_up_proj = ObsTerm(func=mdp.base_up_proj) # 机器人向上方向与世界坐标系z轴的投影关系，用于判断机器人是否保持直立姿态
+        base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
+            func=mdp.base_heading_proj, 
+            params={"target_pos": (1000.0, 0.0, 0.0)}
+        )
+        base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
+            func=mdp.base_angle_to_target, 
+            params={"target_pos": (1000.0, 0.0, 0.0)} # 目标坐标位置
+        )
 
         def __post_init__(self):
             self.enable_corruption = False
             self.concatenate_terms = True
 
     # observation groups
-    policy: PolicyCfg = PolicyCfg()
+    policy: ObsGroup = PolicyCfg()
+    critic: ObsGroup = CriticCfg()
 
 
 @configclass
@@ -217,33 +247,16 @@ class RewardsCfg:
         },
     )
 
-    # # 膝关节位置奖励
-    # knee_joint_move = RewTerm(func=mdp.joint_pos_limits,
-    #     weight=3.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_joint_3"])
-    #     },
-    # )
-
-    # # 鼓励膝关节运动速度
-    # knee_joint_velocity = RewTerm(
-    #     func=mdp.joint_vel_l2,
-    #     weight=3.0,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_joint_3"])
-    #     },
-    # )
-
 # 自己编写的
     # 前进进度奖励
-    progress = RewTerm(func=mdp.progress_reward, weight=1.0, params={"target_pos": (0.0, 1000.0, 0.0)})
+    progress = RewTerm(func=mdp.progress_reward, weight=5.0, params={"target_pos": (1000.0, 0.0, 0.0)})
     # 直立姿态奖励 
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.5, params={"threshold": 0.45})
     # 朝向目标奖励
-    move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (0.0, 1000.0, 0.0)})
+    move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (1000.0, 0.0, 0.0)})
     # 线速度跟踪
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=3.0,
+        func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=2.0,
         params={"command_name": "base_velocity", "std": 0.3},
     )
     # 角速度跟踪
@@ -262,13 +275,23 @@ class RewardsCfg:
     )
 
     feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped, weight=3,
+        func=mdp.feet_air_time_positive_biped_snesor,
+        weight=2.5,
         params={
             "command_name": "base_velocity",
-            "asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_2","right_joint_2","left_joint_3","right_joint_3"]),
-            "threshold": 10}
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+            "threshold": 2.5,
+        },
     )
-
+        
+    feet_slide = RewTerm(
+        func=mdp.feet_slide,
+        weight=-0.5,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+            "asset_cfg": SceneEntityCfg("robot", body_names=".*_link_4"),
+        },
+    )
 
 @configclass
 class TerminationsCfg:
