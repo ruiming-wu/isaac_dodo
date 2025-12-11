@@ -26,6 +26,7 @@ from isaac_dodo.assets.robots.dodo import DODO_CFG
 # Scene definition
 ##
 
+TARGET_POS = (1000.0, 0.0, 0.0)
 
 @configclass
 class DodoManageSceneCfg(InteractiveSceneCfg):
@@ -159,7 +160,7 @@ class ObservationsCfg:
         )
         base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
             func=mdp.base_angle_to_target, 
-            params={"target_pos": (1000.0, 0.0, 0.0)} # 目标坐标位置
+            params={"target_pos": TARGET_POS} # 目标坐标位置
         )
 
         def __post_init__(self):
@@ -191,11 +192,11 @@ class ObservationsCfg:
         base_up_proj = ObsTerm(func=mdp.base_up_proj) # 机器人向上方向与世界坐标系z轴的投影关系，用于判断机器人是否保持直立姿态
         base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
             func=mdp.base_heading_proj, 
-            params={"target_pos": (1000.0, 0.0, 0.0)}
+            params={"target_pos": TARGET_POS}
         )
         base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
             func=mdp.base_angle_to_target, 
-            params={"target_pos": (1000.0, 0.0, 0.0)} # 目标坐标位置
+            params={"target_pos": TARGET_POS} # 目标坐标位置
         )
 
         def __post_init__(self):
@@ -249,11 +250,11 @@ class RewardsCfg:
 
 # 自己编写的
     # 前进进度奖励
-    progress = RewTerm(func=mdp.progress_reward, weight=5.0, params={"target_pos": (1000.0, 0.0, 0.0)})
+    progress = RewTerm(func=mdp.progress_reward, weight=5.0, params={"target_pos": TARGET_POS})
     # 直立姿态奖励 
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.5, params={"threshold": 0.45})
     # 朝向目标奖励
-    move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": (1000.0, 0.0, 0.0)})
+    move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": TARGET_POS})
     # 线速度跟踪
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=2.0,
