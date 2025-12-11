@@ -28,6 +28,9 @@ from isaac_dodo.assets.robots.dodo import DODO_CFG
 
 TARGET_POS = (1000.0, 0.0, 0.0)
 
+TARGET_LIN_VEL = [-0.5, 0.0, 1.0]
+TARGET_ANG_VEL = [-0.5, 0.0, 0.5]
+
 @configclass
 class DodoManageSceneCfg(InteractiveSceneCfg):
     """Configuration for the terrain scene with a humanoid robot."""
@@ -42,50 +45,7 @@ class DodoManageSceneCfg(InteractiveSceneCfg):
     )
 
     # robot
-    # robot = ArticulationCfg = DODO_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-    robot = ArticulationCfg(
-        prim_path="{ENV_REGEX_NS}/Robot",
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=os.path.join(os.getcwd(), "source/isaac_dodo/isaac_dodo/assets/robots/dodo/dodobot_v3.usd") ,
-            activate_contact_sensors=True,  # 启用接触传感器
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                disable_gravity=None, # 不禁用重力
-                max_depenetration_velocity=10.0, # 最大去穿透速度,解决碰撞穿透问题
-                enable_gyroscopic_forces=True, # 启用陀螺力矩计算，提高仿真的真实性
-            ),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=True, # 允许机器人自身部件之间的碰撞检测
-                solver_position_iteration_count=2,
-                solver_velocity_iteration_count=1,
-                sleep_threshold=0.005,
-                stabilization_threshold=0.001,
-            ),
-            copy_from_source=False,
-        ),
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.55),
-            joint_pos={
-                ".*_joint_1": 0.0,
-                ".*_joint_2": -0.35,
-                ".*_joint_3": 0.57,
-                ".*_joint_4": -0.22,
-            },
-            joint_vel={".*": 0.0},
-        ),
-        actuators={
-            "legs": ImplicitActuatorCfg(
-                joint_names_expr=["left_joint_.*", "right_joint_.*"],
-                stiffness=42.0,
-                damping=2.5,
-
-                armature = 0.01,
-                effort_limit_sim=2.5,
-                velocity_limit_sim=5.0,
-            )
-        },
-
-        
-    )
+    robot : ArticulationCfg = DODO_CFG.replace(prim_path="/World/envs/env_.*/Robot")
 
     # sensors
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
@@ -140,9 +100,9 @@ class ObservationsCfg:
         """Observations for the policy."""
 
     # isaaclab自带
-        base_height = ObsTerm(func=mdp.base_pos_z) # 观测机器人基座的高度（z坐标）
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # 观测机器人基座的线性速度(包含x、y、z三个方向)
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.25) # 基座的角速度(使用scale进行归一化缩放)        
+        # base_height = ObsTerm(func=mdp.base_pos_z) # 观测机器人基座的高度（z坐标）
+        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # 观测机器人基座的线性速度(包含x、y、z三个方向)
+        # base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.25) # 基座的角速度(使用scale进行归一化缩放)        
         # 关节状态
         joint_pos = ObsTerm(func=mdp.joint_pos)
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
@@ -152,16 +112,16 @@ class ObservationsCfg:
         actions = ObsTerm(func=mdp.last_action)
 
     # 自己编写的
-        base_yaw_roll = ObsTerm(func=mdp.base_yaw_roll) # 机器人的偏航角(yaw)和翻滚角(roll)
-        base_up_proj = ObsTerm(func=mdp.base_up_proj) # 机器人向上方向与世界坐标系z轴的投影关系，用于判断机器人是否保持直立姿态
-        base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
-            func=mdp.base_heading_proj, 
-            params={"target_pos": (1000.0, 0.0,  0.0)}
-        )
-        base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
-            func=mdp.base_angle_to_target, 
-            params={"target_pos": TARGET_POS} # 目标坐标位置
-        )
+        # base_yaw_roll = ObsTerm(func=mdp.base_yaw_roll) # 机器人的偏航角(yaw)和翻滚角(roll)
+        # base_up_proj = ObsTerm(func=mdp.base_up_proj) # 机器人向上方向与世界坐标系z轴的投影关系，用于判断机器人是否保持直立姿态
+        # base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
+        #     func=mdp.base_heading_proj, 
+        #     params={"target_pos": (1000.0, 0.0,  0.0)}
+        # )
+        # base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
+        #     func=mdp.base_angle_to_target, 
+        #     params={"target_pos": TARGET_POS} # 目标坐标位置
+        # )
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -190,14 +150,14 @@ class ObservationsCfg:
     # 自己编写的
         base_yaw_roll = ObsTerm(func=mdp.base_yaw_roll) # 机器人的偏航角(yaw)和翻滚角(roll)
         base_up_proj = ObsTerm(func=mdp.base_up_proj) # 机器人向上方向与世界坐标系z轴的投影关系，用于判断机器人是否保持直立姿态
-        base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
-            func=mdp.base_heading_proj, 
-            params={"target_pos": TARGET_POS}
-        )
-        base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
-            func=mdp.base_angle_to_target, 
-            params={"target_pos": TARGET_POS} # 目标坐标位置
-        )
+        # base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
+        #     func=mdp.base_heading_proj, 
+        #     params={"target_pos": TARGET_POS}
+        # )
+        # base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
+        #     func=mdp.base_angle_to_target, 
+        #     params={"target_pos": TARGET_POS} # 目标坐标位置
+        # )
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -249,12 +209,12 @@ class RewardsCfg:
     )
 
 # 自己编写的
-    # 前进进度奖励
-    progress = RewTerm(func=mdp.progress_reward, weight=5.0, params={"target_pos": TARGET_POS})
+    # # 前进进度奖励
+    # progress = RewTerm(func=mdp.progress_reward, weight=5.0, params={"target_pos": TARGET_POS})
     # 直立姿态奖励 
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.5, params={"threshold": 0.45})
-    # 朝向目标奖励
-    move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": TARGET_POS})
+    # # 朝向目标奖励
+    # move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": TARGET_POS})
     # 线速度跟踪
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=2.0,
