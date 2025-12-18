@@ -13,7 +13,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 16
     max_iterations = 1500
     save_interval = 100
-    experiment_name = "dodo_managed_ppo"
+    experiment_name = "dodo_manage_joystick_tracking_ppo"
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,

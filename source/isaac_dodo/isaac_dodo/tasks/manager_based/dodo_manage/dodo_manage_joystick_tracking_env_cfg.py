@@ -28,8 +28,8 @@ from isaac_dodo.assets.robots.dodo import DODO_CFG
 
 TARGET_POS = (1000.0, 0.0, 0.0)
 
-TARGET_LIN_VEL = [-0.5, 0.0, 1.0]
-TARGET_ANG_VEL = [-0.5, 0.0, 0.5]
+TARGET_LIN_VEL = [-0.5, 0.5]
+TARGET_ANG_VEL = [-0.5, 0.5]
 
 @configclass
 class DodoManageSceneCfg(InteractiveSceneCfg):
@@ -63,22 +63,20 @@ class CommandsCfg:
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
-        rel_standing_envs=0.02, # 2%的环境将获得零速度命令（站立不动）
-        rel_heading_envs=1.0, # 100%的环境将使用朝向控制
-        heading_command=True, # 朝向命令
-        heading_control_stiffness=0.5, # 刚度系数，响应朝向变化的速度
+        rel_standing_envs=0.0,  # 0%站立环境，都要运动
+        rel_heading_envs=0.0,   # 0%朝向控制，直接使用角速度
+        heading_command=False,  # 不使用朝向命令
         debug_vis=True,
-        ranges=mdp.UniformVelocityCommandCfg.Ranges( # 定义了训练过程中机器人可能接收到的各种命令的取值范围，避免过拟合到特定的运动模式
-            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-math.pi, math.pi)
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(TARGET_LIN_VEL[0], TARGET_LIN_VEL[1]),  # (-0.5, 0.5)
+            lin_vel_y=(0.0, 0.0),  # (0.0, 0.0) 
+            ang_vel_z=(TARGET_ANG_VEL[0], TARGET_ANG_VEL[1]),  # (-0.5, 0.5)
         ),
     )
-
-
 
 ##
 # MDP settings
 ##
-
 
 @configclass
 class ActionsCfg:
@@ -87,7 +85,7 @@ class ActionsCfg:
     joint_effort = mdp.JointEffortActionCfg(
         asset_name="robot",
         joint_names=[".*"],
-        scale=2.5
+        scale=6.0,
     )
 
 
@@ -98,30 +96,17 @@ class ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
         """Observations for the policy."""
-
-    # isaaclab自带
+        # without imu
         # base_height = ObsTerm(func=mdp.base_pos_z) # 观测机器人基座的高度（z坐标）
         # base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # 观测机器人基座的线性速度(包含x、y、z三个方向)
         # base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.25) # 基座的角速度(使用scale进行归一化缩放)        
-        # 关节状态
         joint_pos = ObsTerm(func=mdp.joint_pos)
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_pos_norm = ObsTerm(func=mdp.joint_pos_limit_normalized) 
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.1)
+        joint_vel = ObsTerm(func=mdp.joint_vel)
+        joint_tau = ObsTerm(func=mdp.joint_effort)
 
+        velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
+    
         actions = ObsTerm(func=mdp.last_action)
-
-    # 自己编写的
-        # base_yaw_roll = ObsTerm(func=mdp.base_yaw_roll) # 机器人的偏航角(yaw)和翻滚角(roll)
-        # base_up_proj = ObsTerm(func=mdp.base_up_proj) # 机器人向上方向与世界坐标系z轴的投影关系，用于判断机器人是否保持直立姿态
-        # base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
-        #     func=mdp.base_heading_proj, 
-        #     params={"target_pos": (1000.0, 0.0,  0.0)}
-        # )
-        # base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
-        #     func=mdp.base_angle_to_target, 
-        #     params={"target_pos": TARGET_POS} # 目标坐标位置
-        # )
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -130,13 +115,14 @@ class ObservationsCfg:
     @configclass
     class CriticCfg(ObsGroup):
         """Test config class for critic observation group"""
-    # isaaclab自带
+        # isaaclab自带
         base_height = ObsTerm(func=mdp.base_pos_z) # 观测机器人基座的高度（z坐标）
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # 观测机器人基座的线性速度(包含x、y、z三个方向)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.25) # 基座的角速度(使用scale进行归一化缩放)        
         # 关节状态
-        joint_pos_norm = ObsTerm(func=mdp.joint_pos_limit_normalized) 
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.1)
+        joint_pos = ObsTerm(func=mdp.joint_pos)
+        joint_vel = ObsTerm(func=mdp.joint_vel)
+        joint_tau = ObsTerm(func=mdp.joint_effort)
 
         # 接触力
         feet_body_forces = ObsTerm(
@@ -150,14 +136,6 @@ class ObservationsCfg:
     # 自己编写的
         base_yaw_roll = ObsTerm(func=mdp.base_yaw_roll) # 机器人的偏航角(yaw)和翻滚角(roll)
         base_up_proj = ObsTerm(func=mdp.base_up_proj) # 机器人向上方向与世界坐标系z轴的投影关系，用于判断机器人是否保持直立姿态
-        # base_heading_proj = ObsTerm( # 观测机器人朝向与目标方向的投影关系
-        #     func=mdp.base_heading_proj, 
-        #     params={"target_pos": TARGET_POS}
-        # )
-        # base_angle_to_target = ObsTerm( # 观测机器人面向目标的角度差
-        #     func=mdp.base_angle_to_target, 
-        #     params={"target_pos": TARGET_POS} # 目标坐标位置
-        # )
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -175,8 +153,8 @@ class EventCfg:
     reset_base = EventTerm(
         func=mdp.reset_root_state_uniform,
         mode="reset",
-        params={"pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (0.4, 0.6)},
-            "velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.5, 0.5)},
+        params={"pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.5, 0.5)},
+            "velocity_range": {"x": (-0.2, 0.2), "y": (-0.2, 0.2), "z": (-0.2, 0.2)},
         },
     )
 
@@ -184,8 +162,8 @@ class EventCfg:
         func=mdp.reset_joints_by_offset,
         mode="reset",
         params={
-            "position_range": (-0.2, 0.2),
-            "velocity_range": (-0.1, 0.1),
+            "position_range": (-0.1, 0.1),
+            "velocity_range": (-0.05, 0.05),
         },
     )
 
@@ -194,54 +172,52 @@ class EventCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
 
-# isaaclab自带
-    alive = RewTerm(func=mdp.is_alive, weight=2.0) # 存活奖励
-    termination = RewTerm(func=mdp.is_terminated, weight=-10.0) # 结束惩罚
+    # basic rewards 
+    alive = RewTerm(func=mdp.is_alive, weight=0.1) # 存活奖励
+    termination = RewTerm(func=mdp.is_terminated, weight=-5.0) # 结束惩罚
     action_l2 = RewTerm(func=mdp.action_l2, weight=-0.01) # 惩罚过大的动作
 
     # 髋关节移位置惩罚
     hip_joint_move = RewTerm(func=mdp.hip_pos_manual_limit,
-        weight=-10.0,
+        weight=-0.5,
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_1", "right_joint_1"]),
             "softlimit": (0, 0),
         },
     )
 
-# 自己编写的
-    # # 前进进度奖励
-    # progress = RewTerm(func=mdp.progress_reward, weight=5.0, params={"target_pos": TARGET_POS})
     # 直立姿态奖励 
-    upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.5, params={"threshold": 0.45})
-    # # 朝向目标奖励
-    # move_to_target = RewTerm(func=mdp.move_to_target_bonus, weight=0.5, params={"threshold": 0.8, "target_pos": TARGET_POS})
+    upright = RewTerm(func=mdp.upright_posture_bonus, weight=0.2, params={"threshold": 0.2})
+
     # 线速度跟踪
     track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=2.0,
+        func=mdp.track_lin_vel_xy_yaw_frame_exp, weight=3.0,
         params={"command_name": "base_velocity", "std": 0.3},
     )
     # 角速度跟踪
     track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_world_exp, weight=3.0, params={"command_name": "base_velocity", "std": 0.3}
+        func=mdp.track_ang_vel_z_world_exp, weight=2.0, 
+        params={"command_name": "base_velocity", "std": 0.3}
     )
+
     # 能耗惩罚
-    energy = RewTerm(
-        func=mdp.power_consumption, weight=-0.005,
-        params={"gear_ratio": {".*": 2.5}},
-    )
+    # energy = RewTerm(
+    #     func=mdp.power_consumption, weight=-0.005,
+    #     params={"gear_ratio": {".*": 27.0}},
+    # )
     # 关节极限惩罚
-    joint_pos_limits = RewTerm(
-        func=mdp.joint_pos_limits_penalty_ratio, weight=-0.25,
-        params={"threshold": 0.98, "gear_ratio": {".*": 2.5}},
-    )
+    # joint_pos_limits = RewTerm(
+    #     func=mdp.joint_pos_limits_penalty_ratio, weight=-0.25,
+    #     params={"threshold": 0.98, "gear_ratio": {".*": 27.0}},
+    # )
 
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped_snesor,
-        weight=2.5,
+        weight=5.0,
         params={
             "command_name": "base_velocity",
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_link_4"),
-            "threshold": 2.5,
+            "threshold": 1,
         },
     )
         
@@ -264,21 +240,26 @@ class TerminationsCfg:
     torso_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.3})
     roll_threshold = DoneTerm(
         func=mdp.bad_orientation,
-        params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 0.8},
+        params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 1.0},
     )
     pitch_threshold = DoneTerm(
         func=mdp.bad_orientation,
-        params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 0.8},
+        params={"asset_cfg": SceneEntityCfg("robot"), "limit_angle": 1.0},
     )
 
     hip_threshold = DoneTerm(
         func=mdp.joint_pos_out_of_manual_limit,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_1", "right_joint_1"]), "bounds": [-0.15, 0.15]},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_1", "right_joint_1"]), "bounds": [-0.2, 0.2]},
     )
+
+    # knee_threshold = DoneTerm(
+    #     func=mdp.joint_pos_out_of_manual_limit,
+    #     params={"asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_3", "right_joint_3"]), "bounds": [0.5, 1.0]},
+    # )
 
 
 @configclass
-class DodoManageEnvCfg(ManagerBasedRLEnvCfg):
+class DodoManageJoystickTrackingEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the MuJoCo-style Humanoid walking environment."""
 
     # Scene settings
@@ -295,13 +276,27 @@ class DodoManageEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 2
-        self.episode_length_s = 16.0
+        self.decimation = 2  # 控制频率 120/2 = 60Hz
+        self.episode_length_s = 16.0  # 16秒episode
+    
         # simulation settings
-        self.sim.dt = 1 / 120.0
+        self.sim.dt = 1 / 120.0  # 8.33ms仿真步长
         self.sim.render_interval = self.decimation
+    
+        # 物理求解器优化 - 对双足机器人重要
         self.sim.physx.bounce_threshold_velocity = 0.2
-        # default friction material
+        self.sim.physx.solver_type = 1  # TGS求解器，更稳定
+        self.sim.physx.min_position_iteration_count = 1
+        self.sim.physx.max_position_iteration_count = 255
+        self.sim.physx.min_velocity_iteration_count = 0
+        self.sim.physx.max_velocity_iteration_count = 255
+    
+        # 接触设置 - 改善足部接触
+        self.sim.physx.default_buffer_size_multiplier = 5.0
+    
+        # 默认摩擦材料 - 确保足部抓地力
         self.sim.physics_material.static_friction = 1.0
         self.sim.physics_material.dynamic_friction = 1.0
-        self.sim.physics_material.restitution = 0.0
+        self.sim.physics_material.restitution = 0.0  # 无弹性，避免弹跳
+        self.sim.physics_material.friction_combine_mode = "multiply"  # 摩擦力组合方式
+        self.sim.physics_material.restitution_combine_mode = "multiply"
