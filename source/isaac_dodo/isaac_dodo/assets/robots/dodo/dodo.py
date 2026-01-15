@@ -48,6 +48,8 @@ DODO_CFG = ArticulationCfg(
             ".*_joint_3": 0.70,
             ".*_joint_4": -0.35,
         },
+
+        # joint_pos={ ".*_joint_1": 0.0, ".*_joint_2": -0.3, ".*_joint_3": 0.90, ".*_joint_4": -0.65,}
         joint_vel={".*": 0.0},
     ),
     soft_joint_pos_limit_factor=0.9,

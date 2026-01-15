@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import math
 import isaaclab.utils.math as math_utils
 import isaaclab.utils.string as string_utils
-from isaaclab.assets import Articulation
+from isaaclab.assets import Articulation, RigidObject
 from isaaclab.sensors import ContactSensor
 from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
 
@@ -56,7 +56,7 @@ def hip_pos_manual_limit(env: ManagerBasedRLEnv, softlimit: tuple[float, float],
     violations = torch.stack([left_violation, right_violation], dim=1)
     return torch.sum(violations, dim=1)
 
-def feet_air_time_positive_biped_snesor(env, command_name: str, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
+def feet_air_time_positive_biped(env, command_name: str, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
     """鼓励双足机器人单脚支撑，另一脚摆动（需要配备传感器）"""
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     # compute the reward
@@ -86,73 +86,6 @@ def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = Scen
     body_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
     reward = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
     return reward
-
-def feet_air_time_positive_biped(
-        env, command_name: str, threshold: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
-    """
-    基于膝关节角度鼓励交替步态（单脚摆动）
-    - 只有当一只脚摆动、另一只脚支撑时才给奖励
-    - 双脚腾空或双脚支撑均无奖励
-    """
-    # 获取左右膝关节角度 [num_envs]
-    asset: Articulation = env.scene[asset_cfg.name]
-    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    left_angle_hip = joint_pos[:, 0]
-    right_angle_hip = joint_pos[:, 1]
-    left_angle_knee = joint_pos[:, 2]
-    right_angle_knee = joint_pos[:, 3]
-    
-
-    # 定义阶段阈值
-    SWING_THRESHOLD_KNEE = 0.4  # 角度 > 此值 = 摆动（脚在空中）
-    SWING_THRESHOLD_HIP = -0.2  # 角度 < 此值 = 摆动
-
-    # 判断是否处于摆动阶段（脚在空中）
-    left_swing_knee = (left_angle_knee > SWING_THRESHOLD_KNEE)   # [num_envs], bool
-    right_swing_knee = (right_angle_knee > SWING_THRESHOLD_KNEE)
-    left_swing_hip = (left_angle_hip < SWING_THRESHOLD_HIP)
-    right_swing_hip = (right_angle_hip < SWING_THRESHOLD_HIP)
-
-    # 计算每只脚的"有效摆动时间"（角度超出阈值的部分）
-    left_air_time = torch.clamp(left_angle_knee, min=0.0)
-    right_air_time = torch.clamp(right_angle_knee, min=0.0)
-
-    # 只允许单腿摆动 (左摆 且 右不摆)  OR  (右摆 且 左不摆)
-    # 检测单腿摆动状态
-    left_single_swing = left_swing_knee & left_swing_hip & ~right_swing_knee & ~right_swing_hip
-    right_single_swing = ~left_swing_knee & ~left_swing_hip & right_swing_knee & right_swing_hip
-    is_single_swing = left_single_swing | right_single_swing
-
-    # 获取命令速度并计算条件
-    command_vel = env.command_manager.get_command(command_name)[:, :2]
-    velocity_condition = torch.norm(command_vel, dim=1) > 0.1
-
-    # 选择摆动脚的 air_time
-    swing_air_time = torch.where(
-        left_single_swing, 
-        left_air_time, 
-        torch.where(right_single_swing, right_air_time, torch.zeros_like(left_air_time))
-    )
-
-    # 计算基础奖励（强调两腿角度差异）
-    base_reward = swing_air_time * 10 * torch.abs(left_angle_knee - right_angle_knee)
-
-    # 检查膝关节角度差异是否显著，以避免轻微摆动。
-    has_significant_knee_angle_diff = torch.abs(left_angle_knee - right_angle_knee) > 0.1
-
-    # 检查走路姿势
-    is_walk_pose = (left_angle_knee>0) & (left_angle_hip<0) & (right_angle_knee>0) & (right_angle_hip<0)
-
-    # 根据条件应用奖励/惩罚
-    reward = torch.where(
-        is_single_swing & velocity_condition & has_significant_knee_angle_diff & is_walk_pose,
-        base_reward,          # 单腿摆动+有速度命令 → 正奖励
-        -base_reward   # 其他情况 → 惩罚
-    )
-    reward = torch.clamp(reward, max=threshold)
-    return reward
-
 def track_lin_vel_xy_yaw_frame_exp(
     env, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -174,6 +107,113 @@ def track_ang_vel_z_world_exp(
     asset = env.scene[asset_cfg.name]
     ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
     return torch.exp(-ang_vel_error / std**2)
+
+def lin_vel_z_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize z-axis base linear velocity using L2 squared kernel."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return torch.square(asset.data.root_lin_vel_b[:, 2])
+
+
+def ang_vel_xy_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize xy-axis base angular velocity using L2 squared kernel."""
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.root_ang_vel_b[:, :2]), dim=1)
+
+
+def flat_orientation_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize non-flat base orientation using L2 squared kernel.
+
+    This is computed by penalizing the xy-components of the projected gravity vector.
+    """
+    # extract the used quantities (to enable type-hinting)
+    asset: RigidObject = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+
+def joint_torques_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize joint torques applied on the articulation using L2 squared kernel.
+
+    NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint torques contribute to the term.
+    """
+    # extract the used quantities (to enable type-hinting)
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.applied_torque[:, asset_cfg.joint_ids]), dim=1)
+
+
+def joint_vel_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Penalize joint velocities on the articulation using an L1-kernel."""
+    # extract the used quantities (to enable type-hinting)
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.sum(torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
+
+
+def joint_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize joint velocities on the articulation using L2 squared kernel.
+
+    NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint velocities contribute to the term.
+    """
+    # extract the used quantities (to enable type-hinting)
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.joint_vel[:, asset_cfg.joint_ids]), dim=1)
+
+
+def joint_acc_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize joint accelerations on the articulation using L2 squared kernel.
+
+    NOTE: Only the joints configured in :attr:`asset_cfg.joint_ids` will have their joint accelerations contribute to the term.
+    """
+    # extract the used quantities (to enable type-hinting)
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.sum(torch.square(asset.data.joint_acc[:, asset_cfg.joint_ids]), dim=1)
+
+
+def joint_deviation_l1(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize joint positions that deviate from the default one."""
+    # extract the used quantities (to enable type-hinting)
+    asset: Articulation = env.scene[asset_cfg.name]
+    # compute out of limits constraints
+    angle = asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    return torch.sum(torch.abs(angle), dim=1)
+
+
+def joint_pos_limits(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Penalize joint positions if they cross the soft limits.
+
+    This is computed as a sum of the absolute value of the difference between the joint position and the soft limits.
+    """
+    # extract the used quantities (to enable type-hinting)
+    asset: Articulation = env.scene[asset_cfg.name]
+    # compute out of limits constraints
+    out_of_limits = -(
+        asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 0]
+    ).clip(max=0.0)
+    out_of_limits += (
+        asset.data.joint_pos[:, asset_cfg.joint_ids] - asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids, 1]
+    ).clip(min=0.0)
+    return torch.sum(out_of_limits, dim=1)
+
+
+def joint_vel_limits(
+    env: ManagerBasedRLEnv, soft_ratio: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize joint velocities if they cross the soft limits.
+
+    This is computed as a sum of the absolute value of the difference between the joint velocity and the soft limits.
+
+    Args:
+        soft_ratio: The ratio of the soft limits to be used.
+    """
+    # extract the used quantities (to enable type-hinting)
+    asset: Articulation = env.scene[asset_cfg.name]
+    # compute out of limits constraints
+    out_of_limits = (
+        torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids])
+        - asset.data.soft_joint_vel_limits[:, asset_cfg.joint_ids] * soft_ratio
+    )
+    # clip to max error = 1 rad/s per joint to avoid huge penalties
+    out_of_limits = out_of_limits.clip_(min=0.0, max=1.0)
+    return torch.sum(out_of_limits, dim=1)
 
 
 class progress_reward(ManagerTermBase):
