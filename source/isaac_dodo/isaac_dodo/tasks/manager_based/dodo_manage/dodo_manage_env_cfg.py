@@ -95,7 +95,7 @@ class ActionsCfg:
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
         joint_names=[".*"],
-        scale=0.5,          # 先用小一点，避免一上来动作过猛
+        scale=0.65,          # 先用小一点，避免一上来动作过猛
         use_default_offset=True,  # 以默认姿态为基准做偏移（如果你的版本支持）
     )
 
@@ -197,8 +197,8 @@ class EventCfg:
         func=mdp.reset_joints_by_offset,
         mode="reset",
         params={
-            "position_range": (-0.2, 0.2),
-            "velocity_range": (-0.1, 0.1),
+            "position_range": (-0.05, 0.05),
+            "velocity_range": (-0.05, 0.05),
         },
     )
 
@@ -233,33 +233,36 @@ class RewardsCfg:
         params={"command_name": "base_velocity", "std": 0.5},
     )
 
-    feet_air_time = RewTerm(
-        func=mdp.feet_air_time_positive_biped_snesor,
-        weight=0.3,
-        params={
-            "command_name": "base_velocity",
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_link_4"),
-            "threshold": 0.4,
-        },
-    )
+    yaw_rate = RewTerm(func=mdp.yaw_rate_l2, weight=-0.2)
+    lin_vel_y = RewTerm(func=mdp.lin_vel_y_l2, weight=-0.2)
+
+    # feet_air_time = RewTerm(
+    #     func=mdp.feet_air_time_positive_biped_snesor,
+    #     weight=0.0,
+    #     params={
+    #         "command_name": "base_velocity",
+    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_link_4", "right_link_4"]),
+    #         "threshold": 0.4,
+    #     },
+    # )
 
     action_rate = RewTerm(
         func=mdp.action_rate_l2,
-        weight=-0.05,
+        weight=-0.03,
     )
         
     feet_slide = RewTerm(
         func=mdp.feet_slide,
-        weight=-2.0,
+        weight=-0.01,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_link_4"),
-            "asset_cfg": SceneEntityCfg("robot", body_names=".*_link_4"),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_link_4", "right_link_4"]),
+            "asset_cfg": SceneEntityCfg("robot", body_names=["left_link_4", "right_link_4"]),
         },
     )
 
     single_support = RewTerm(
         func=mdp.single_support_reward,
-        weight=0.3,   # 推荐 0.3 ~ 1.0
+        weight=0.8,   # 推荐 0.3 ~ 1.0
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_link_4", "right_link_4"]),
             "force_threshold": 15.0,
@@ -268,7 +271,7 @@ class RewardsCfg:
 
     alternate_steps = RewTerm(
         func=mdp.alternate_footstep_reward,
-        weight=0.5,   # 从 0.2~1.0 试
+        weight=0.2,   # 从 0.2~1.0 试
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_link_4", "right_link_4"]),
             "force_threshold": 15.0,
@@ -278,7 +281,7 @@ class RewardsCfg:
 
     feet_sep = RewTerm(
         func=mdp.feet_lateral_separation_reward,
-        weight=0.6,  # 先试 0.3~1.0
+        weight=0.2,  # 先试 0.3~1.0
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["left_link_4", "right_link_4"]),
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_link_4", "right_link_4"]),
@@ -288,7 +291,52 @@ class RewardsCfg:
         },
     )
 
+    feet_clearance = RewTerm(
+        func=mdp.feet_clearance_reward,
+        weight=0.05,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["left_link_4", "right_link_4"]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_link_4", "right_link_4"]),
+            "target_height": 0.05,
+            "force_threshold": 15.0,
+        },
+    )
 
+    #knee limit
+    knee_flex = RewTerm(
+        func=mdp.knee_flexion_target_exp,
+        weight=0.05,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_3", "right_joint_3"]),
+            "knee_target": 0.8,
+            "std": 0.35,
+        },
+    )   
+
+    swing_knee = RewTerm(
+        func=mdp.swing_knee_flexion_reward,
+        weight=0.1,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_link_4", "right_link_4"]),
+            "knee_cfg": SceneEntityCfg("robot", joint_names=["left_joint_3", "right_joint_3"]),
+            "knee_target": 0.9,
+            "std": 0.35,
+            "force_threshold": 10.0,
+        },
+    )
+
+    hip_swing = RewTerm(
+        func=mdp.hip_swing_amplitude_reward,
+        weight=0.03,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["left_joint_1", "right_joint_1"]),
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_link_4", "right_link_4"]),
+            "command_name": "base_velocity",
+            "target": 0.30,
+            "max_amp": 0.70,
+            "force_threshold": 10.0,
+        },
+    )
 # --- 以下奖励项暂时不启用 ---
     # 髋关节移位置惩罚
     # hip_joint_move = RewTerm(func=mdp.hip_pos_manual_limit,
@@ -311,16 +359,7 @@ class RewardsCfg:
     #     params={"threshold": 0.98, "gear_ratio": {".*": 2.5}},
     # )
 
-    # feet_clearance = RewTerm(
-    #     func=mdp.feet_clearance_reward,
-    #     weight=0.25,
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot", body_names=["left_link_4", "right_link_4"]),
-    #         "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["left_link_4", "right_link_4"]),
-    #         "target_height": 0.05,
-    #         "force_threshold": 15.0,
-    #     },
-    # )
+
 
 
     # feet_flight = RewTerm(

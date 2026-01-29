@@ -80,7 +80,7 @@ def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = Scen
     """
     # Penalize feet sliding
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
+    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 15.0
     asset = env.scene[asset_cfg.name]
 
     body_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
@@ -214,9 +214,115 @@ def feet_lateral_separation_reward(
 
     return r * stance_any.float()
 
-# 
+# 	yaw 角速度惩罚（让它别自转）
+def yaw_rate_l2(env, asset_cfg=SceneEntityCfg("robot")):
+    asset = env.scene[asset_cfg.name]
+    return asset.data.root_ang_vel_w[:, 2] ** 2
+
+# 	侧向速度惩罚（让它别横着走）
+def lin_vel_y_l2(env, asset_cfg=SceneEntityCfg("robot")):
+    asset = env.scene[asset_cfg.name]
+    return asset.data.root_lin_vel_w[:, 1] ** 2
 
 
+def feet_clearance_reward(
+    env, asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    target_height: float = 0.05,
+    force_threshold: float = 5.0,
+):
+    robot = env.scene[asset_cfg.name]
+
+    # ===== DEBUG PRINT (only once) =====
+    if not hasattr(env, "_printed_foot_quat"):
+        foot_quat_w = robot.data.body_quat_w[:, asset_cfg.body_ids, :]  # [N,2,4]
+        print("DEBUG foot body_ids:", asset_cfg.body_ids)
+        print("DEBUG LEFT foot quat:", foot_quat_w[0, 0])
+        print("DEBUG RIGHT foot quat:", foot_quat_w[0, 1])
+        print("DEBUG ROOT quat:", robot.data.root_quat_w[0])
+        env._printed_foot_quat = True
+
+    feet_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, :]
+    foot_z = feet_pos_w[..., 2]  # [num_envs, 2]
+
+    # infer contact from forces
+    sensor = env.scene.sensors[sensor_cfg.name]
+    forces_w = sensor.data.net_forces_w
+    force_mag = torch.linalg.norm(forces_w[:, sensor_cfg.body_ids, :], dim=-1)  # [num_envs, 2]
+    in_contact = force_mag > force_threshold
+
+    # Only reward clearance when foot is NOT in contact (swing foot)
+    swing = ~in_contact
+
+    # hinge reward up to target_height
+    z_clamped = torch.clamp(foot_z, 0.0, target_height) / target_height
+
+    # mask: stance foot gets 0 reward
+    reward = torch.sum(z_clamped * swing.float(), dim=-1)
+    return reward
+
+def knee_flexion_target_exp(
+    env,
+    asset_cfg: SceneEntityCfg,
+    knee_target: float = 0.8,   # 目标屈膝角度（你先从 0.6~1.0 试）
+    std: float = 0.3,
+):
+    asset: Articulation = env.scene[asset_cfg.name]
+    q = asset.data.joint_pos[:, asset_cfg.joint_ids]  # [N, num_selected]
+    err = q - knee_target
+    # 每个env对选中的膝关节做平均
+    return torch.exp(-torch.mean(err * err, dim=-1) / (std * std))
+
+def swing_knee_flexion_reward(
+    env,
+    sensor_cfg: SceneEntityCfg,
+    knee_cfg: SceneEntityCfg,
+    knee_target: float = 0.9,
+    std: float = 0.3,
+    force_threshold: float = 10.0,
+):
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    forces = sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]   # [N,2,3]
+    in_contact = torch.linalg.norm(forces, dim=-1) > force_threshold  # [N,2]
+    swing = ~in_contact  # [N,2]
+
+    asset: Articulation = env.scene[knee_cfg.name]
+    qk = asset.data.joint_pos[:, knee_cfg.joint_ids]  # [N,2] 选中左右膝
+
+    # 只在 swing 的那条腿上算奖励
+    err = qk - knee_target
+    r = torch.exp(-(err * err) / (std * std))  # [N,2]
+    r = torch.sum(r * swing.float(), dim=-1)   # [N]
+
+    return r
+
+def hip_swing_amplitude_reward(
+    env,
+    asset_cfg: SceneEntityCfg,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str = "base_velocity",
+    target: float = 0.30,
+    max_amp: float = 0.70,
+    force_threshold: float = 10.0,
+):
+    asset: Articulation = env.scene[asset_cfg.name]
+    sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+
+    # hip angles [N,2]
+    q = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    amp = torch.clamp(torch.abs(q), max=max_amp)
+    r = torch.mean(torch.clamp(amp / target, max=1.0), dim=-1)  # [N]
+
+    # gate by command (only when moving)
+    cmd = env.command_manager.get_command(command_name)[:, :2]
+    moving = torch.norm(cmd, dim=1) > 0.1
+
+    # gate by single support (encourage swing during walking)
+    forces_w = sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]
+    in_contact = torch.linalg.norm(forces_w, dim=-1) > force_threshold  # [N,2]
+    single_support = torch.logical_xor(in_contact[:, 0], in_contact[:, 1])
+
+    return r * moving.float() * single_support.float()
 # Unused reward terms (currently disabled in env cfg)
 # Keep here for future experiments.
 # 
@@ -379,42 +485,8 @@ def feet_lateral_separation_reward(
 #     return penalty
 
 
-# def feet_clearance_reward(
-#     env, asset_cfg: SceneEntityCfg,
-#     sensor_cfg: SceneEntityCfg,
-#     target_height: float = 0.05,
-#     force_threshold: float = 5.0,
-# ):
-#     robot = env.scene[asset_cfg.name]
 
-#     # ===== DEBUG PRINT (only once) =====
-#     if not hasattr(env, "_printed_foot_quat"):
-#         foot_quat_w = robot.data.body_quat_w[:, asset_cfg.body_ids, :]  # [N,2,4]
-#         print("DEBUG foot body_ids:", asset_cfg.body_ids)
-#         print("DEBUG LEFT foot quat:", foot_quat_w[0, 0])
-#         print("DEBUG RIGHT foot quat:", foot_quat_w[0, 1])
-#         print("DEBUG ROOT quat:", robot.data.root_quat_w[0])
-#         env._printed_foot_quat = True
 
-#     feet_pos_w = robot.data.body_pos_w[:, asset_cfg.body_ids, :]
-#     foot_z = feet_pos_w[..., 2]  # [num_envs, 2]
-
-#     # infer contact from forces
-#     sensor = env.scene.sensors[sensor_cfg.name]
-#     forces_w = sensor.data.net_forces_w
-#     force_mag = torch.linalg.norm(forces_w[:, sensor_cfg.body_ids, :], dim=-1)  # [num_envs, 2]
-#     in_contact = force_mag > force_threshold
-
-#     # Only reward clearance when foot is NOT in contact (swing foot)
-#     swing = ~in_contact
-
-#     # hinge reward up to target_height
-#     z_clamped = torch.clamp(foot_z, 0.0, target_height) / target_height
-
-#     # mask: stance foot gets 0 reward
-#     reward = torch.sum(z_clamped * swing.float(), dim=-1)
-
-#     return reward
 
 # class joint_pos_limits_penalty_ratio(ManagerTermBase):
 #     """Penalty for violating joint position limits weighted by the gear ratio."""
