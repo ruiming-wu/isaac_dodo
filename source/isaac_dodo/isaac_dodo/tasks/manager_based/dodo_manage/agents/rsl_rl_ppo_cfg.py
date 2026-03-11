@@ -15,6 +15,11 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 100
     experiment_name = "dodo_managed_ppo"
     empirical_normalization = False
+
+    # #wandb logging configuration
+    logger = "wandb"
+    wandb_project = "dodo_manage_ppo"
+
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[32, 32],

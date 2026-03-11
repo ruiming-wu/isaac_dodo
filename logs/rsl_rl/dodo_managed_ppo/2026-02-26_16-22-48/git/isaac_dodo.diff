@@ -1,0 +1,53 @@
+--- git status ---
+On branch joystick-tracking-trash
+Your branch is up to date with 'origin/joystick-tracking-trash'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   logs/rsl_rl/dodo_managed_ppo/2026-01-29_17-26-15/exported/policy.pt
+	modified:   source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/agents/rsl_rl_ppo_cfg.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	logs/rsl_rl/dodo_managed_ppo/2026-02-26_14-34-43/
+	logs/rsl_rl/dodo_managed_ppo/2026-02-26_15-08-44/
+	logs/rsl_rl/dodo_managed_ppo/2026-02-26_16-22-48/
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/logs/rsl_rl/dodo_managed_ppo/2026-01-29_17-26-15/exported/policy.pt b/logs/rsl_rl/dodo_managed_ppo/2026-01-29_17-26-15/exported/policy.pt
+index a40f023..dbe129c 100644
+--- a/logs/rsl_rl/dodo_managed_ppo/2026-01-29_17-26-15/exported/policy.pt
++++ b/logs/rsl_rl/dodo_managed_ppo/2026-01-29_17-26-15/exported/policy.pt
+@@ -1,3 +1,3 @@
+ version https://git-lfs.github.com/spec/v1
+-oid sha256:0e7afb1f61590537c47974a6d61e1889936136796cd7a42487425b3428381a20
++oid sha256:76dd8e6f76fdb9d150d375106cdf652f553aa061f995c758ee5436730ebb1e48
+ size 21696
+diff --git a/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/agents/rsl_rl_ppo_cfg.py b/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/agents/rsl_rl_ppo_cfg.py
+index 31f1fa2..5aa95cd 100644
+--- a/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/agents/rsl_rl_ppo_cfg.py
++++ b/source/isaac_dodo/isaac_dodo/tasks/manager_based/dodo_manage/agents/rsl_rl_ppo_cfg.py
+@@ -6,6 +6,7 @@
+ from isaaclab.utils import configclass
+ 
+ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
++# import wandb
+ 
+ 
+ @configclass
+@@ -15,6 +16,11 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
+     save_interval = 100
+     experiment_name = "dodo_managed_ppo"
+     empirical_normalization = False
++
++    # #wandb logging configuration
++    # logger = "wandb"
++    # wandb_project = "dodo_managed_ppo"
++
+     policy = RslRlPpoActorCriticCfg(
+         init_noise_std=1.0,
+         actor_hidden_dims=[32, 32],

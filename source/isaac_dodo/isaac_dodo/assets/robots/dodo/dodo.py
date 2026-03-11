@@ -43,10 +43,10 @@ DODO_CFG = ArticulationCfg(
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.60),
         joint_pos={
-            ".*_joint_1": 0.0,
-            ".*_joint_2": -0.35,
-            ".*_joint_3": 0.70,
-            ".*_joint_4": -0.35,
+            ".*_joint_1": 0.0,      # hip
+            ".*_joint_2": -0.25,    # knee（膝盖微屈）
+            ".*_joint_3": 0.50,     # ankle（脚踝更贴地）
+            ".*_joint_4": -0.15,    # foot（减少后跟着地）
         },
         joint_vel={".*": 0.0},
     ),
@@ -54,11 +54,11 @@ DODO_CFG = ArticulationCfg(
     actuators={
         "legs": ImplicitActuatorCfg(
             joint_names_expr=["left_joint_.*", "right_joint_.*"],
-            stiffness=42.0,
-            damping=2.5,
+            stiffness=40.0,
+            damping=3.2,
             armature = 0.01,
-            effort_limit_sim=6.0,
-            velocity_limit_sim=5.0,
+            effort_limit_sim=7.5,
+            velocity_limit_sim=5.5,
         ),
     },
 )
