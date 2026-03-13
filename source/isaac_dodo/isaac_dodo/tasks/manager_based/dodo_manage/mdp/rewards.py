@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+# Reward a sufficiently upright torso using projected gravity/up direction.
 def upright_posture_bonus(
     env: ManagerBasedRLEnv, threshold: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -32,6 +33,7 @@ def upright_posture_bonus(
     return (up_proj > threshold).float()
 
 
+# Smoothly reward small torso pitch angles around zero.
 def pitch_stability_bonus(
     env: ManagerBasedRLEnv, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -41,11 +43,13 @@ def pitch_stability_bonus(
     return torch.exp(-(pitch * pitch) / (std * std))
 
 
+# Penalize fast pitching motion in the robot body frame.
 def pitch_rate_l2(env, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
     return asset.data.root_ang_vel_b[:, 1] ** 2
 
 
+# During locomotion, encourage the stance phase to keep the torso level and at a usable height.
 def stance_stability_reward(
     env,
     sensor_cfg: SceneEntityCfg,
@@ -70,6 +74,7 @@ def stance_stability_reward(
     return pitch_reward * height_reward * stance_any * moving
 
 
+# Keep the torso near a nominal walking height instead of crouching or pogoing too high.
 def torso_height_target_reward(
     env,
     target_height: float = 0.52,
@@ -85,6 +90,7 @@ def torso_height_target_reward(
     return reward * moving
 
 
+# Follow an explicit sinusoidal reference for both hips and knees.
 def phase_reference_reward(
     env,
     hip_cfg: SceneEntityCfg,
@@ -122,6 +128,7 @@ def phase_reference_reward(
     return hip_reward * knee_reward * moving
 
 
+# A lighter phase prior that only constrains left/right hip alternation.
 def hip_phase_reference_reward(
     env,
     hip_cfg: SceneEntityCfg,
@@ -146,6 +153,7 @@ def hip_phase_reference_reward(
     return reward * moving
 
 
+# Penalize foot sliding while a foot is in contact.
 def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > FORCE_THRESHOLDS["slide"]
@@ -154,12 +162,14 @@ def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = Scen
     return torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
 
 
+# Penalize large changes between consecutive actions.
 def action_rate_l2(env) -> torch.Tensor:
     a = env.action_manager.action
     a_prev = env.action_manager.prev_action
     return torch.sum((a - a_prev) ** 2, dim=-1)
 
 
+# Prefer exactly one foot in contact during walking, while softly discouraging double support.
 def single_support_reward(env, sensor_cfg: SceneEntityCfg, force_threshold: float = None) -> torch.Tensor:
     if force_threshold is None:
         force_threshold = FORCE_THRESHOLDS["stance"]
@@ -177,6 +187,7 @@ def single_support_reward(env, sensor_cfg: SceneEntityCfg, force_threshold: floa
     return reward * moving
 
 
+# Reward alternating left/right touchdowns and add a light dense contact-timing bonus.
 class alternate_footstep_reward(ManagerTermBase):
     def __init__(self, env, cfg: RewardTermCfg):
         super().__init__(cfg, env)
@@ -209,6 +220,7 @@ class alternate_footstep_reward(ManagerTermBase):
         return (rew_sparse + rew_dense) * moving.float()
 
 
+# Reward matching commanded planar velocity in a yaw-aligned body frame.
 def track_lin_vel_xy_yaw_frame_exp(
     env, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -218,6 +230,7 @@ def track_lin_vel_xy_yaw_frame_exp(
     return torch.exp(-lin_vel_error / std**2)
 
 
+# Reward matching the commanded yaw rate in world frame.
 def track_ang_vel_z_world_exp(
     env, command_name: str, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
@@ -226,6 +239,7 @@ def track_ang_vel_z_world_exp(
     return torch.exp(-ang_vel_error / std**2)
 
 
+# Reward the swing foot landing ahead of the base in the robot's forward frame.
 def swing_foot_forward_reward(
     env,
     asset_cfg: SceneEntityCfg,
@@ -255,21 +269,25 @@ def swing_foot_forward_reward(
     return torch.sum(reward, dim=-1) * moving
 
 
+# Penalize unnecessary yaw spinning.
 def yaw_rate_l2(env, asset_cfg=SceneEntityCfg("robot")) -> torch.Tensor:
     asset = env.scene[asset_cfg.name]
     return asset.data.root_ang_vel_w[:, 2] ** 2
 
 
+# Penalize sideways drift.
 def lin_vel_y_l2(env, asset_cfg=SceneEntityCfg("robot")) -> torch.Tensor:
     asset = env.scene[asset_cfg.name]
     return asset.data.root_lin_vel_w[:, 1] ** 2
 
 
+# Penalize vertical bouncing.
 def lin_vel_z_l2(env, asset_cfg=SceneEntityCfg("robot")) -> torch.Tensor:
     asset = env.scene[asset_cfg.name]
     return asset.data.root_lin_vel_w[:, 2] ** 2
 
 
+# Encourage both knees to stay near a nominal flexion target.
 def knee_flexion_target_exp(env, asset_cfg: SceneEntityCfg, knee_target: float = 0.8, std: float = 0.3):
     asset: Articulation = env.scene[asset_cfg.name]
     q = asset.data.joint_pos[:, asset_cfg.joint_ids]
@@ -277,6 +295,7 @@ def knee_flexion_target_exp(env, asset_cfg: SceneEntityCfg, knee_target: float =
     return torch.exp(-torch.mean(err * err, dim=-1) / (std * std))
 
 
+# During swing, encourage the knee on that side to bend toward the swing target.
 def swing_knee_flexion_reward(
     env,
     sensor_cfg: SceneEntityCfg,
@@ -295,6 +314,7 @@ def swing_knee_flexion_reward(
     return torch.sum(r * swing.float(), dim=-1)
 
 
+# Encourage similar left/right knee bend magnitudes during locomotion.
 def knee_symmetry_reward(env, asset_cfg: SceneEntityCfg, command_name: str = "base_velocity", std: float = 0.18) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
     q = asset.data.joint_pos[:, asset_cfg.joint_ids]
@@ -305,6 +325,7 @@ def knee_symmetry_reward(env, asset_cfg: SceneEntityCfg, command_name: str = "ba
     return reward * moving
 
 
+# Reward a coordinated phase pattern: one knee bends more while the hips move oppositely.
 def leg_phase_reward(
     env,
     sensor_cfg: SceneEntityCfg,
@@ -331,6 +352,7 @@ def leg_phase_reward(
     return reward * moving
 
 
+# Reward left/right hips being out of phase with sufficient amplitude, especially in single support.
 def hip_antiphase_reward(
     env,
     asset_cfg: SceneEntityCfg,
@@ -361,6 +383,7 @@ def hip_antiphase_reward(
     return antiphase_r * vel_antiphase * amp_gate * vel_gate * moving * phase_gate
 
 
+# Reward opposite-signed hip velocities so the legs keep alternating rather than moving together.
 def hip_velocity_antiphase_reward(
     env,
     asset_cfg: SceneEntityCfg,

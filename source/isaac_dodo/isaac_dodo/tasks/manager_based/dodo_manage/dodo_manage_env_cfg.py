@@ -142,10 +142,12 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
-    # Stability terms keep the torso upright enough for gait learning to remain feasible.
+    # Episode-level penalty and action regularization.
     termination = RewTerm(func=mdp.is_terminated, weight=get_reward_weight("termination"))
     action_l2 = RewTerm(func=mdp.action_l2, weight=get_reward_weight("action_l2"))
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=get_reward_weight("action_rate"))
+
+    # Torso stability terms keep gait learning from collapsing into constant falls.
     upright = RewTerm(func=mdp.upright_posture_bonus, weight=get_reward_weight("upright"), params={"threshold": REWARD_CONFIG["upright_threshold"]})
     pitch_stability = RewTerm(func=mdp.pitch_stability_bonus, weight=get_reward_weight("pitch_stability"), params={"std": REWARD_CONFIG["pitch_std"]})
     pitch_rate = RewTerm(func=mdp.pitch_rate_l2, weight=get_reward_weight("pitch_rate"))
@@ -164,6 +166,8 @@ class RewardsCfg:
         weight=get_reward_weight("torso_height_target"),
         params={"target_height": REWARD_CONFIG["torso_height_target"], "std": REWARD_CONFIG["torso_height_std"]},
     )
+
+    # Command-tracking terms encourage the policy to follow the requested motion.
     track_lin_vel_xy_exp = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
         weight=get_reward_weight("track_lin_vel"),
@@ -177,6 +181,8 @@ class RewardsCfg:
     yaw_rate = RewTerm(func=mdp.yaw_rate_l2, weight=get_reward_weight("yaw_rate"))
     lin_vel_y = RewTerm(func=mdp.lin_vel_y_l2, weight=get_reward_weight("lin_vel_y"))
     lin_vel_z = RewTerm(func=mdp.lin_vel_z_l2, weight=get_reward_weight("lin_vel_z"))
+
+    # Contact-quality term to discourage slipping while a foot is loaded.
     feet_slide = RewTerm(
         func=mdp.feet_slide,
         weight=get_reward_weight("feet_slide"),
@@ -185,7 +191,8 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=JOINT_CONFIG["feet_bodies"]),
         },
     )
-    # Gait terms shape contact timing, swing-leg motion, and left/right coordination.
+
+    # Contact timing and swing placement shape a usable stepping pattern.
     single_support = RewTerm(
         func=mdp.single_support_reward,
         weight=get_reward_weight("single_support"),
@@ -208,6 +215,8 @@ class RewardsCfg:
             "force_threshold": REWARD_CONFIG["swing_forward_force_threshold"],
         },
     )
+
+    # Knee, leg-phase, and reference terms refine coordination once stepping exists.
     knee_flex = RewTerm(
         func=mdp.knee_flexion_target_exp,
         weight=get_reward_weight("knee_flex"),
@@ -268,6 +277,8 @@ class RewardsCfg:
             "std": REWARD_CONFIG["hip_phase_std"],
         },
     )
+
+    # Final coordination terms push left/right hips and full-leg amplitudes away from mirror-in-phase motion.
     hip_antiphase = RewTerm(
         func=mdp.hip_antiphase_reward,
         weight=get_reward_weight("hip_antiphase"),

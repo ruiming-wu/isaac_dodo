@@ -1,5 +1,6 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
+#
 # SPDX-License-Identifier: BSD-3-Clause
 
 """Centralized constants for Dodo Manage environment configuration."""
@@ -56,13 +57,13 @@ TERMINATION_CONFIG = {
 
 REWARD_CONFIG = {
     # Reward config is split into two layers:
-    # 1) weights: how much each reward term contributes to the final return
-    # 2) the remaining fields below: shape/target/std parameters used inside each reward
+    # 1) "weights": how much each reward term contributes to the final return
+    # 2) the fields below: target/std/threshold parameters used inside reward functions
     "weights": {
-        # The policy first needs to stay upright and survive, then gait terms refine
-        # stepping rhythm, swing-leg motion, and left/right coordination.
+        # Core stability / tracking terms.
         "termination": -10.0,
         "action_l2": -0.002,
+        "action_rate": -0.006,
         "upright": 0.56,
         "pitch_stability": 0.46,
         "pitch_rate": -0.2,
@@ -73,23 +74,21 @@ REWARD_CONFIG = {
         "yaw_rate": -0.2,
         "lin_vel_y": -0.15,
         "lin_vel_z": -0.25,
-        "action_rate": -0.006,
         "feet_slide": -0.06,
+        # Contact-timing and stepping structure.
         "single_support": 0.48,
         "alternate_steps": 0.48,
-        "feet_sep": 0.0,
-        "feet_clearance": 0.0,
         "swing_foot_forward": 0.68,
+        # Knee and leg-coordination shaping.
         "knee_flex": 0.26,
         "swing_knee": 0.46,
         "knee_symmetry": 0.3,
         "leg_phase": 1.1,
         "phase_reference": 1.15,
         "hip_phase_reference": 0.92,
-        "hip_swing": 0.0,
-        "symmetry_amp": 0.56,
         "hip_antiphase": 0.36,
         "hip_vel_antiphase": 0.34,
+        "symmetry_amp": 0.56,
     },
     # Stability-related reward parameters.
     "upright_threshold": 0.45,
@@ -101,18 +100,12 @@ REWARD_CONFIG = {
     # Velocity-tracking parameters.
     "lin_vel_std": 0.20,
     "ang_vel_std": 0.5,
-    "velocity_gate_threshold": 0.1,
     # Foot placement / swing-foot shaping parameters.
-    "lateral_sep_target": 0.11,
-    "lateral_sep_std": 0.06,
-    "lateral_sep_force_threshold": 10.0,
-    "clearance_target_height": 0.10,
-    "clearance_force_threshold": 8.0,
     "swing_forward_target": 0.09,
     "swing_forward_std": 0.06,
     "swing_forward_force_threshold": 6.0,
     "gait_reward_gate_speed": 0.06,
-    # Knee-target and coordination parameters.
+    # Knee-target and left/right coordination parameters.
     "knee_target": -0.42,
     "knee_std": 0.20,
     "swing_knee_target": -0.78,
@@ -129,10 +122,7 @@ REWARD_CONFIG = {
     "phase_knee_stance": -0.28,
     "phase_knee_swing_amp": 0.60,
     "phase_knee_std": 0.18,
-    # Hip-specific coordination and amplitude limits.
-    "hip_target_amplitude": 0.45,
-    "hip_max_amplitude": 0.9,
-    "hip_force_threshold": 8.0,
+    # Hip-specific coordination parameters.
     "hip_antiphase_std": 0.16,
 }
 
