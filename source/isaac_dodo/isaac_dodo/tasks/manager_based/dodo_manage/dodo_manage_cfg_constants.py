@@ -55,7 +55,12 @@ TERMINATION_CONFIG = {
 }
 
 REWARD_CONFIG = {
+    # Reward config is split into two layers:
+    # 1) weights: how much each reward term contributes to the final return
+    # 2) the remaining fields below: shape/target/std parameters used inside each reward
     "weights": {
+        # The policy first needs to stay upright and survive, then gait terms refine
+        # stepping rhythm, swing-leg motion, and left/right coordination.
         "termination": -10.0,
         "action_l2": -0.002,
         "upright": 0.56,
@@ -86,15 +91,18 @@ REWARD_CONFIG = {
         "hip_antiphase": 0.36,
         "hip_vel_antiphase": 0.34,
     },
+    # Stability-related reward parameters.
     "upright_threshold": 0.45,
     "pitch_std": 0.30,
     "stance_pitch_std": 0.18,
     "stance_height_std": 0.06,
     "torso_height_target": 0.50,
     "torso_height_std": 0.10,
+    # Velocity-tracking parameters.
     "lin_vel_std": 0.20,
     "ang_vel_std": 0.5,
     "velocity_gate_threshold": 0.1,
+    # Foot placement / swing-foot shaping parameters.
     "lateral_sep_target": 0.11,
     "lateral_sep_std": 0.06,
     "lateral_sep_force_threshold": 10.0,
@@ -104,6 +112,7 @@ REWARD_CONFIG = {
     "swing_forward_std": 0.06,
     "swing_forward_force_threshold": 6.0,
     "gait_reward_gate_speed": 0.06,
+    # Knee-target and coordination parameters.
     "knee_target": -0.42,
     "knee_std": 0.20,
     "swing_knee_target": -0.78,
@@ -112,6 +121,7 @@ REWARD_CONFIG = {
     "knee_symmetry_std": 0.16,
     "leg_phase_knee_delta": 0.22,
     "leg_phase_std": 0.16,
+    # Explicit sinusoidal gait-reference parameters.
     "phase_period": 0.72,
     "phase_hip_amplitude": 0.52,
     "phase_hip_std": 0.20,
@@ -119,6 +129,7 @@ REWARD_CONFIG = {
     "phase_knee_stance": -0.28,
     "phase_knee_swing_amp": 0.60,
     "phase_knee_std": 0.18,
+    # Hip-specific coordination and amplitude limits.
     "hip_target_amplitude": 0.45,
     "hip_max_amplitude": 0.9,
     "hip_force_threshold": 8.0,

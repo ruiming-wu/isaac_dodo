@@ -55,6 +55,8 @@ class CommandsCfg:
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=COMMAND_RANGES["resampling_time"],
+        # Keep a small fraction of standing commands so the policy does not forget balance,
+        # but most environments still practice forward walking.
         rel_standing_envs=0.10,
         rel_heading_envs=0.0,
         heading_command=False,
@@ -140,6 +142,7 @@ class EventCfg:
 
 @configclass
 class RewardsCfg:
+    # Stability terms keep the torso upright enough for gait learning to remain feasible.
     termination = RewTerm(func=mdp.is_terminated, weight=get_reward_weight("termination"))
     action_l2 = RewTerm(func=mdp.action_l2, weight=get_reward_weight("action_l2"))
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=get_reward_weight("action_rate"))
@@ -182,6 +185,7 @@ class RewardsCfg:
             "asset_cfg": SceneEntityCfg("robot", body_names=JOINT_CONFIG["feet_bodies"]),
         },
     )
+    # Gait terms shape contact timing, swing-leg motion, and left/right coordination.
     single_support = RewTerm(
         func=mdp.single_support_reward,
         weight=get_reward_weight("single_support"),

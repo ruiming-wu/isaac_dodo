@@ -1,5 +1,6 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
+#
 # SPDX-License-Identifier: BSD-3-Clause
 
 from __future__ import annotations
@@ -99,6 +100,8 @@ def phase_reference_reward(
     asset: Articulation = env.scene[hip_cfg.name]
     sim_step = SCENE_CONFIG["sim_dt"] * SCENE_CONFIG["decimation"]
     time_s = env.episode_length_buf.float() * sim_step
+    # This is an explicit sinusoidal gait prior: RL is free to deviate, but gets rewarded
+    # for staying near a simple alternating hip/knee pattern.
     phase = (2.0 * torch.pi * time_s) / phase_period
     desired_hips = torch.stack(
         (hip_amplitude * torch.sin(phase), hip_amplitude * torch.sin(phase + torch.pi)), dim=-1
@@ -130,6 +133,7 @@ def hip_phase_reference_reward(
     asset: Articulation = env.scene[hip_cfg.name]
     sim_step = SCENE_CONFIG["sim_dt"] * SCENE_CONFIG["decimation"]
     time_s = env.episode_length_buf.float() * sim_step
+    # A lighter version of the phase prior that only constrains the hip pair.
     phase = (2.0 * torch.pi * time_s) / phase_period
     desired_hips = torch.stack(
         (hip_amplitude * torch.sin(phase), hip_amplitude * torch.sin(phase + torch.pi)), dim=-1
@@ -239,6 +243,8 @@ def swing_foot_forward_reward(
     yaw_q_rep = yaw_q.unsqueeze(1).expand(-1, feet_pos_w.shape[1], -1).reshape(-1, 4)
     feet_rel = (feet_pos_w - base_pos_w).reshape(-1, 3)
     feet_rel_b = quat_apply_inverse(yaw_q_rep, feet_rel).reshape(feet_pos_w.shape[0], feet_pos_w.shape[1], 3)
+    # Measure swing-foot placement in a yaw-aligned body frame so "forward" follows the robot,
+    # not the world x-axis.
     forward = feet_rel_b[..., 0]
     in_contact = torch.linalg.norm(sensor.data.net_forces_w[:, sensor_cfg.body_ids, :], dim=-1) > force_threshold
     swing = ~in_contact
@@ -313,6 +319,8 @@ def leg_phase_reward(
     in_contact = torch.linalg.norm(sensor.data.net_forces_w[:, sensor_cfg.body_ids, :], dim=-1) > force_threshold
     knees = env.scene[knee_cfg.name].data.joint_pos[:, knee_cfg.joint_ids]
     hips = env.scene[hip_cfg.name].data.joint_pos[:, hip_cfg.joint_ids]
+    # When one leg swings and the other supports, reward a knee bend difference together with
+    # opposite-signed hip motion.
     left_swing = (~in_contact[:, 0]) & in_contact[:, 1]
     right_swing = (~in_contact[:, 1]) & in_contact[:, 0]
     knee_delta = torch.where(left_swing, knees[:, 0] - knees[:, 1], torch.where(right_swing, knees[:, 1] - knees[:, 0], torch.zeros_like(knees[:, 0])))
