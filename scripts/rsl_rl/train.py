@@ -32,6 +32,12 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
+parser.add_argument(
+    "--print_config_summary",
+    action="store_true",
+    default=True,
+    help="Print a short summary of resolved training hyper-parameters.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -129,6 +135,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         seed = agent_cfg.seed + app_launcher.local_rank
         env_cfg.seed = seed
         agent_cfg.seed = seed
+
+    if args_cli.print_config_summary:
+        print("[INFO] Training summary:")
+        print(
+            f"  task={args_cli.task} num_envs={env_cfg.scene.num_envs} device={env_cfg.sim.device} "
+            f"seed={env_cfg.seed} max_iterations={agent_cfg.max_iterations}"
+        )
+        print(
+            f"  rollout={agent_cfg.num_steps_per_env} lr={agent_cfg.algorithm.learning_rate} "
+            f"entropy={agent_cfg.algorithm.entropy_coef} epochs={agent_cfg.algorithm.num_learning_epochs} "
+            f"mini_batches={agent_cfg.algorithm.num_mini_batches}"
+        )
+        print(
+            f"  actor={agent_cfg.policy.actor_hidden_dims} critic={agent_cfg.policy.critic_hidden_dims} "
+            f"init_noise_std={agent_cfg.policy.init_noise_std}"
+        )
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)

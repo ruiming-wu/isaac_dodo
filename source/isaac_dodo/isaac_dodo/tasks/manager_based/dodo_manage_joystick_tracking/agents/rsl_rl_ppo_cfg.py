@@ -10,15 +10,20 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 @configclass
 class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
-    num_steps_per_env = 16
-    max_iterations = 1500
+    num_steps_per_env = 40
+    max_iterations = 2500
     save_interval = 100
     experiment_name = "dodo_manage_joystick_tracking_ppo"
-    empirical_normalization = False
+    empirical_normalization = True
+    
+    # Wandb 配置
+    logger = "wandb"
+    wandb_project = "dodo_manage_joystick_tracking"
+    
     policy = RslRlPpoActorCriticCfg(
-        init_noise_std=1.0,
-        actor_hidden_dims=[32, 32],
-        critic_hidden_dims=[32, 32],
+        init_noise_std=0.4,
+        actor_hidden_dims=[256, 256, 128],
+        critic_hidden_dims=[256, 256, 128],
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(
@@ -28,7 +33,7 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
-        learning_rate=1.0e-3,
+        learning_rate=1.5e-4,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,

@@ -7,275 +7,553 @@ from __future__ import annotations
 
 import torch
 from typing import TYPE_CHECKING
-import math
-import isaaclab.utils.math as math_utils
-import isaaclab.utils.string as string_utils
+
 from isaaclab.assets import Articulation
 from isaaclab.sensors import ContactSensor
-from isaaclab.managers import ManagerTermBase, RewardTermCfg, SceneEntityCfg
-
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import quat_apply_inverse, yaw_quat
 
-
-import isaac_dodo.tasks.manager_based.dodo_manage.mdp.observations as obs
+import isaac_dodo.tasks.manager_based.dodo_manage_joystick_tracking.mdp.observations as obs
 
 if TYPE_CHECKING:
-    from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedEnv
+    from isaaclab.envs import ManagerBasedRLEnv
 
 
-def upright_posture_bonus(
-    env: ManagerBasedRLEnv, threshold: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
-    """Reward for maintaining an upright posture."""
-    up_proj = obs.base_up_proj(env, asset_cfg).squeeze(-1)
-    return (up_proj > threshold).float()
+def _planar_body_velocities(asset: Articulation) -> torch.Tensor:
+    """将世界系线速度投影到机器人偏航坐标系。"""
+    heading_quat_w = yaw_quat(asset.data.root_quat_w)
+    return quat_apply_inverse(heading_quat_w, asset.data.root_lin_vel_w)
 
 
-def move_to_target_bonus(
+def _body_ang_velocities(asset: Articulation) -> torch.Tensor:
+    """将世界系角速度转到机体系。"""
+    return quat_apply_inverse(asset.data.root_quat_w, asset.data.root_ang_vel_w)
+
+
+def _moving_command_mask(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    command = env.command_manager.get_command(command_name)
+    moving_lin = torch.abs(command[:, 0]) > 0.03
+    moving_yaw = torch.abs(command[:, 2]) > 0.10
+    return moving_lin | moving_yaw
+
+
+def _curriculum_progress(
     env: ManagerBasedRLEnv,
-    threshold: float,
-    target_pos: tuple[float, float, float],
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    start_step: int = 2_000,
+    end_step: int = 30_000,
+) -> float:
+    """根据训练步数返回 [0, 1] 的课程学习进度。"""
+    step_count = float(getattr(env, "common_step_counter", 0))
+    if step_count <= start_step:
+        return 0.0
+    if step_count >= end_step:
+        return 1.0
+    return (step_count - start_step) / max(end_step - start_step, 1)
+
+
+def _scheduled_tolerance(
+    env: ManagerBasedRLEnv,
+    initial_std: float,
+    final_std: float,
+    start_step: int = 2_000,
+    end_step: int = 30_000,
+) -> float:
+    progress = _curriculum_progress(env, start_step, end_step)
+    return initial_std + progress * (final_std - initial_std)
+
+
+def _scheduled_bonus_scale(
+    env: ManagerBasedRLEnv,
+    initial_scale: float,
+    final_scale: float,
+    start_step: int = 2_000,
+    end_step: int = 30_000,
+) -> float:
+    progress = _curriculum_progress(env, start_step, end_step)
+    return initial_scale + progress * (final_scale - initial_scale)
+
+def upright_reward(
+    env: ManagerBasedRLEnv, 
+    std: float=0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
-    """Reward for moving to the target heading."""
-    heading_proj = obs.base_heading_proj(env, target_pos, asset_cfg).squeeze(-1)
-    return torch.where(heading_proj > threshold, 1.0, heading_proj / threshold)
+    """奖励保持直立姿态。"""
+    roll, pitch, yaw = obs.base_roll_pitch_yaw(env, asset_cfg).unbind(dim=-1)
+    orientation_error = torch.square(roll) + torch.square(pitch)
+    return torch.exp(-orientation_error / std**2) # maximum reward is 1.0
 
-
-def hip_pos_manual_limit(env: ManagerBasedRLEnv, softlimit: tuple[float, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"), ) -> torch.Tensor:
-    """Penalize joint positions if they cross the soft limits.
-
-    This is computed as a sum of the absolute value of the difference between the joint position and the soft limits.
-    """
-    # extract the used quantities (to enable type-hinting)
+def height_reward(
+    env: ManagerBasedRLEnv, 
+    target_height: float, 
+    std: float=0.1, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """奖励接近目标高度。"""
     asset: Articulation = env.scene[asset_cfg.name]
-    hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    # compute out of limits constraints
-    left_violation = -(hip_pos[:, 0] - softlimit[0]).clip(max=0.0)
-    right_violation = -(hip_pos[:, 1] - softlimit[1]).clip(max=0.0)
-    violations = torch.stack([left_violation, right_violation], dim=1)
-    return torch.sum(violations, dim=1)
+    base_height = asset.data.root_pos_w[:, 2]
+    height_error = base_height - target_height
+    return torch.exp(-torch.square(height_error) / std**2) # maximum reward is 1.0
 
-def feet_air_time_positive_biped_snesor(env, command_name: str, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """鼓励双足机器人单脚支撑，另一脚摆动（需要配备传感器）"""
+def linear_velocity_tracking_reward(
+    env: ManagerBasedRLEnv, 
+    command_name: str, 
+    std: float=0.1, 
+    final_std: float | None = None,
+    bonus_scale: float = 1.0,
+    final_bonus_scale: float | None = None,
+    curriculum_start_step: int = 2_000,
+    curriculum_end_step: int = 30_000,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """奖励基座偏航坐标系下的平面线速度跟踪。"""
+    asset: Articulation = env.scene[asset_cfg.name]
+    vel = _planar_body_velocities(asset)[:, :2]
+    command = env.command_manager.get_command(command_name)[:, :2]
+    vel_error = torch.sum(torch.square(command - vel), dim=1)
+    current_std = _scheduled_tolerance(env, std, final_std if final_std is not None else std, curriculum_start_step, curriculum_end_step)
+    current_scale = _scheduled_bonus_scale(
+        env,
+        bonus_scale,
+        final_bonus_scale if final_bonus_scale is not None else bonus_scale,
+        curriculum_start_step,
+        curriculum_end_step,
+    )
+    return current_scale * torch.exp(-vel_error / current_std**2)
+
+def angular_velocity_tracking_reward(
+    env: ManagerBasedRLEnv, 
+    command_name: str, 
+    std: float=0.1, 
+    final_std: float | None = None,
+    bonus_scale: float = 1.0,
+    final_bonus_scale: float | None = None,
+    curriculum_start_step: int = 2_000,
+    curriculum_end_step: int = 30_000,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """奖励机体系偏航角速度跟踪。"""
+    asset: Articulation = env.scene[asset_cfg.name]
+    ang_vel = _body_ang_velocities(asset)[:, 2]
+    command = env.command_manager.get_command(command_name)[:, 2]
+    ang_vel_error = torch.square(command - ang_vel)
+    current_std = _scheduled_tolerance(env, std, final_std if final_std is not None else std, curriculum_start_step, curriculum_end_step)
+    current_scale = _scheduled_bonus_scale(
+        env,
+        bonus_scale,
+        final_bonus_scale if final_bonus_scale is not None else bonus_scale,
+        curriculum_start_step,
+        curriculum_end_step,
+    )
+    return current_scale * torch.exp(-ang_vel_error / current_std**2)
+
+def feet_air_time_reward(
+    env: ManagerBasedRLEnv, 
+    sensor_cfg: SceneEntityCfg, 
+    command_name: str = "base_velocity",
+    std: float = 0.12,
+    final_std: float | None = None,
+    bonus_scale: float = 1.0,
+    final_bonus_scale: float | None = None,
+    curriculum_start_step: int = 2_000,
+    curriculum_end_step: int = 30_000,
+) -> torch.Tensor:
+    """奖励更接近人形步态的摆脚空中时间。"""
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    # compute the reward
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]  # [num_envs, 2]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]  # [num_envs, 2]
+    in_contact = contact_time > 0.0  # [num_envs, 2]
+
+    single_stance = torch.sum(in_contact.int(), dim=1) == 1
+    swing_air_time = torch.where(in_contact, torch.zeros_like(air_time), air_time)
+    swing_air_time = torch.max(swing_air_time, dim=1)[0]
+    swing_air_time = torch.clamp(swing_air_time, max=0.6)
+
+    command = env.command_manager.get_command(command_name)
+    target_air_time = 0.18 + 0.75 * torch.abs(command[:, 0]) + 0.08 * torch.abs(command[:, 2])
+    target_air_time = torch.clamp(target_air_time, min=0.18, max=0.42)
+    moving_mask = _moving_command_mask(env, command_name).float()
+
+    current_std = _scheduled_tolerance(env, std, final_std if final_std is not None else std, curriculum_start_step, curriculum_end_step)
+    current_scale = _scheduled_bonus_scale(
+        env,
+        bonus_scale,
+        final_bonus_scale if final_bonus_scale is not None else bonus_scale,
+        curriculum_start_step,
+        curriculum_end_step,
+    )
+    reward = torch.exp(-torch.square(swing_air_time - target_air_time) / current_std**2)
+    return current_scale * reward * single_stance.float() * moving_mask
+
+def feet_swing_height_reward(
+    env: ManagerBasedRLEnv,
+    target_height: float = 0.15,
+    std: float = 0.1,
+    final_std: float | None = None,
+    bonus_scale: float = 1.0,
+    final_bonus_scale: float | None = None,
+    curriculum_start_step: int = 2_000,
+    curriculum_end_step: int = 30_000,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """摆动阶段脚保持目标高度。"""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    asset = env.scene[asset_cfg.name]
+    
+    # 获取摆动状态
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    in_swing = (air_time > 0.05).float()  # [num_envs, 2]
+    
+    # 获取脚离地面的高度（z坐标，假设地面z=0）
+    foot_height = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # [num_envs, 2]
+    
+    # 奖励接近目标高度的摆动脚
+    height_error = foot_height - target_height
+    current_std = _scheduled_tolerance(env, std, final_std if final_std is not None else std, curriculum_start_step, curriculum_end_step)
+    current_scale = _scheduled_bonus_scale(
+        env,
+        bonus_scale,
+        final_bonus_scale if final_bonus_scale is not None else bonus_scale,
+        curriculum_start_step,
+        curriculum_end_step,
+    )
+    reward = in_swing * torch.exp(-height_error**2 / current_std**2)
+    
+    return current_scale * torch.mean(reward, dim=1)
+
+
+def feet_clearance_reward(
+    env: ManagerBasedRLEnv,
+    min_height: float = 0.08,
+    std: float = 0.03,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=".*_link_4"),
+) -> torch.Tensor:
+    """奖励摆动脚有足够离地间隙，减少擦地滑行。"""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    asset = env.scene[asset_cfg.name]
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    in_swing = (air_time > 0.03).float()
+    foot_height = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]
+    clearance_gap = torch.clamp(min_height - foot_height, min=0.0)
+    reward = in_swing * torch.exp(-clearance_gap**2 / std**2)
+    return torch.mean(reward, dim=1)
+
+
+def gait_single_stance_reward(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+    command_name: str = "base_velocity",
+    bonus_scale: float = 1.0,
+    final_bonus_scale: float | None = None,
+    curriculum_start_step: int = 2_000,
+    curriculum_end_step: int = 30_000,
+) -> torch.Tensor:
+    """鼓励行走时出现清晰的左右交替支撑。"""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    single_stance = (torch.sum(in_contact.int(), dim=1) == 1).float()
+    current_scale = _scheduled_bonus_scale(
+        env,
+        bonus_scale,
+        final_bonus_scale if final_bonus_scale is not None else bonus_scale,
+        curriculum_start_step,
+        curriculum_end_step,
+    )
+    return current_scale * single_stance * _moving_command_mask(env, command_name).float()
+
+
+def gait_phase_symmetry_reward(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+    command_name: str = "base_velocity",
+    std: float = 0.16,
+    final_std: float | None = None,
+    bonus_scale: float = 1.0,
+    final_bonus_scale: float | None = None,
+    curriculum_start_step: int = 2_000,
+    curriculum_end_step: int = 30_000,
+) -> torch.Tensor:
+    """鼓励左右脚周期时间更接近，减少明显跛行。"""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    cycle_time = torch.clamp(air_time + contact_time, max=1.0)
+    left_cycle = cycle_time[:, 0]
+    right_cycle = cycle_time[:, 1]
+    current_std = _scheduled_tolerance(env, std, final_std if final_std is not None else std, curriculum_start_step, curriculum_end_step)
+    current_scale = _scheduled_bonus_scale(
+        env,
+        bonus_scale,
+        final_bonus_scale if final_bonus_scale is not None else bonus_scale,
+        curriculum_start_step,
+        curriculum_end_step,
+    )
+    reward = torch.exp(-torch.square(left_cycle - right_cycle) / current_std**2)
+    return current_scale * reward * _moving_command_mask(env, command_name).float()
+
+
+def gait_step_period_reward(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+    command_name: str = "base_velocity",
+    target_step_period: float = 0.5,
+    std: float = 0.18,
+    final_std: float | None = None,
+    bonus_scale: float = 1.0,
+    final_bonus_scale: float | None = None,
+    curriculum_start_step: int = 4_000,
+    curriculum_end_step: int = 40_000,
+) -> torch.Tensor:
+    """鼓励左右换脚时间接近目标步长。
+
+    这里把“单脚支撑持续时间”近似看作一步的时长，并鼓励其接近 0.5s。
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
     contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
     in_contact = contact_time > 0.0
-    in_mode_time = torch.where(in_contact, contact_time, air_time)
     single_stance = torch.sum(in_contact.int(), dim=1) == 1
-    reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
-    reward = torch.clamp(reward, max=threshold)
-    # no reward for zero command
-    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
-    return reward
 
-def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
-    """Penalize feet sliding.
+    stance_duration = torch.where(in_contact, contact_time, torch.zeros_like(contact_time))
+    stance_duration = torch.max(stance_duration, dim=1)[0]
+    stance_duration = torch.clamp(stance_duration, max=1.0)
 
-    This function penalizes the agent for sliding its feet on the ground. The reward is computed as the
-    norm of the linear velocity of the feet multiplied by a binary contact sensor. This ensures that the
-    agent is penalized only when the feet are in contact with the ground.
-    """
-    # Penalize feet sliding
+    current_std = _scheduled_tolerance(
+        env,
+        std,
+        final_std if final_std is not None else std,
+        curriculum_start_step,
+        curriculum_end_step,
+    )
+    current_scale = _scheduled_bonus_scale(
+        env,
+        bonus_scale,
+        final_bonus_scale if final_bonus_scale is not None else bonus_scale,
+        curriculum_start_step,
+        curriculum_end_step,
+    )
+    reward = torch.exp(-torch.square(stance_duration - target_step_period) / current_std**2)
+    return current_scale * reward * single_stance.float() * _moving_command_mask(env, command_name).float()
+
+def stance_high_velocity_penalty(
+    env: ManagerBasedRLEnv,
+    std: float = 0.1,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """支撑阶段脚应该低速。"""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    asset = env.scene[asset_cfg.name]
+    
+    # 获取脚接触状态：contact_time > 0 表示着地
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = (contact_time > 0.0).float()  # [num_envs, 2]
+    
+    # 获取脚的速度（link_4 的速度）
+    foot_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]  # [num_envs, 2, 2]
+    foot_speed = torch.norm(foot_vel, dim=-1)  # [num_envs, 2]
+    
+    penalty = in_contact * (1.0 - torch.exp(-foot_speed**2 / std**2))
+    
+    return torch.mean(penalty, dim=1)  # 平均两只脚, maximum penalty is 1.0
+
+def swing_high_force_penalty(
+    env: ManagerBasedRLEnv,
+    std: float = 0.1,
+    sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_link_4")
+) -> torch.Tensor:
+    """摆动阶段脚应该无接触力。"""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    
+    # 获取摆动状态：air_time > 0 表示离地
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    in_swing = (air_time > 0.0).float()  # [num_envs, 2]
+    
+    # 获取脚的接触力
+    contact_forces = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :]  # [num_envs, 2, 3]
+    force_magnitude = torch.norm(contact_forces, dim=-1)  # [num_envs, 2]
+    
+    penalty = in_swing * (1.0 - torch.exp(-force_magnitude**2 / std**2))
+    
+    return torch.mean(penalty, dim=1) # average over both feet, maximum penalty is 1.0
+
+def feet_slide_penalty(
+    env: ManagerBasedRLEnv, 
+    sensor_cfg: SceneEntityCfg, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """惩罚足部滑动。"""
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
     asset = env.scene[asset_cfg.name]
-
     body_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
-    reward = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
-    return reward
+    penalty = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
+    return penalty # higher penalty for more sliding, no upper limit
 
-def feet_air_time_positive_biped(
-        env, command_name: str, threshold: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+def joint_acc_penalty(
+    env: ManagerBasedRLEnv, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
-    """
-    基于膝关节角度鼓励交替步态（单脚摆动）
-    - 只有当一只脚摆动、另一只脚支撑时才给奖励
-    - 双脚腾空或双脚支撑均无奖励
-    """
-    # 获取左右膝关节角度 [num_envs]
+    """惩罚关节加速度过大。"""
     asset: Articulation = env.scene[asset_cfg.name]
-    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    left_angle_hip = joint_pos[:, 0]
-    right_angle_hip = joint_pos[:, 1]
-    left_angle_knee = joint_pos[:, 2]
-    right_angle_knee = joint_pos[:, 3]
+    joint_acc = asset.data.joint_acc[:, asset_cfg.joint_ids]
+    penalty = torch.sum(torch.square(joint_acc), dim=1)
+    return penalty
+
+def joint_vel_penalty(
+    env: ManagerBasedRLEnv, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """惩罚动作变化过大。"""
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    penalty = torch.sum(torch.square(joint_vel), dim=1)
+    return penalty
+
+def joint_tau_penalty(
+    env: ManagerBasedRLEnv, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """惩罚关节力矩过大。"""
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_tau = asset.data.applied_torque[:, asset_cfg.joint_ids]
+    penalty = torch.sum(torch.square(joint_tau), dim=1)
+    return penalty
+
+def energy_penalty(
+    env: ManagerBasedRLEnv, 
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """惩罚能量消耗过大。"""
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_tau = asset.data.applied_torque[:, asset_cfg.joint_ids]
+    joint_vel = asset.data.joint_vel[:, asset_cfg.joint_ids]
+    power = joint_tau * joint_vel  # instantaneous power per joint
+    energy = torch.sum(torch.abs(power), dim=1)  # total energy consumption
+    return energy
+
+def linear_vel_z_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """惩罚垂直速度。"""
+    asset: Articulation = env.scene[asset_cfg.name]
+    v_z = asset.data.root_lin_vel_w[:, 2]
+    return torch.square(v_z)
+
+def angular_vel_xy_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """惩罚XY平面角速度（roll/pitch）。"""
+    asset: Articulation = env.scene[asset_cfg.name]
+    ang_vel_xy = asset.data.root_ang_vel_w[:, :2]
+    return torch.sum(torch.square(ang_vel_xy), dim=1)
+
+def joint_in_range_reward(
+    env: ManagerBasedRLEnv, 
+    ranges,
+    joint_ids=None,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """奖励关节位置在指定范围内。"""
+    asset: Articulation = env.scene[asset_cfg.name]
+
+    # resolve joint indices
+    ids = joint_ids if joint_ids is not None else asset_cfg.joint_ids
+    if ids is None:
+        ids = slice(None)
+
+    joint_pos = asset.data.joint_pos[:, ids]
+
+    # normalize ranges to per-joint tensor
+    if isinstance(ranges[0], (list, tuple)):
+        ranges_tensor = torch.tensor(ranges, device=env.device, dtype=joint_pos.dtype)
+    else:
+        ranges_tensor = torch.tensor([ranges] * joint_pos.shape[1], device=env.device, dtype=joint_pos.dtype)
+
+    lower_in_range = joint_pos >= ranges_tensor[None, :, 0]
+    upper_in_range = joint_pos <= ranges_tensor[None, :, 1]
+
+    in_range = lower_in_range & upper_in_range
+    return torch.all(in_range, dim=1).float()
+
+
+
+
+# def hip_soft_penalty(
+#     env: ManagerBasedRLEnv, 
+#     soft_limit: tuple[float, float], 
+#     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+# ) -> torch.Tensor:
+#     """惩罚髋关节位置越过软限制。"""
+#     asset: Articulation = env.scene[asset_cfg.name]
+#     hip_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+#     left_violation = -(hip_pos[:, 0] - soft_limit[0]).clip(max=0.0)
+#     right_violation = -(hip_pos[:, 1] - soft_limit[1]).clip(max=0.0)
+#     violations = torch.stack([left_violation, right_violation], dim=1)
+#     return torch.sum(violations, dim=1)
+
+# def knee_usage_reward(
+#     env: ManagerBasedRLEnv, 
+#     min_bend_angle: float = 0.2,
+#     sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces", body_names=".*_link_4"),
+#     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+# ) -> torch.Tensor:
+#     """奖励膝关节弯曲（摆动腿膝盖比支撑腿更弯曲）。"""
+#     asset = env.scene[asset_cfg.name]
+#     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+#     joint_pos = asset.data.joint_pos
+#     joint_names = asset.joint_names
+
+#     # 可靠获取左右脚索引
+#     foot_names = [name.lower() for name in contact_sensor.body_names]
+#     left_foot_idx = None
+#     right_foot_idx = None
+#     for i, name in enumerate(foot_names):
+#         if "left" in name:
+#             left_foot_idx = i
+#         if "right" in name:
+#             right_foot_idx = i
     
-
-    # 定义阶段阈值
-    SWING_THRESHOLD_KNEE = 0.4  # 角度 > 此值 = 摆动（脚在空中）
-    SWING_THRESHOLD_HIP = -0.2  # 角度 < 此值 = 摆动
-
-    # 判断是否处于摆动阶段（脚在空中）
-    left_swing_knee = (left_angle_knee > SWING_THRESHOLD_KNEE)   # [num_envs], bool
-    right_swing_knee = (right_angle_knee > SWING_THRESHOLD_KNEE)
-    left_swing_hip = (left_angle_hip < SWING_THRESHOLD_HIP)
-    right_swing_hip = (right_angle_hip < SWING_THRESHOLD_HIP)
-
-    # 计算每只脚的"有效摆动时间"（角度超出阈值的部分）
-    left_air_time = torch.clamp(left_angle_knee, min=0.0)
-    right_air_time = torch.clamp(right_angle_knee, min=0.0)
-
-    # 只允许单腿摆动 (左摆 且 右不摆)  OR  (右摆 且 左不摆)
-    # 检测单腿摆动状态
-    left_single_swing = left_swing_knee & left_swing_hip & ~right_swing_knee & ~right_swing_hip
-    right_single_swing = ~left_swing_knee & ~left_swing_hip & right_swing_knee & right_swing_hip
-    is_single_swing = left_single_swing | right_single_swing
-
-    # 获取命令速度并计算条件
-    command_vel = env.command_manager.get_command(command_name)[:, :2]
-    velocity_condition = torch.norm(command_vel, dim=1) > 0.1
-
-    # 选择摆动脚的 air_time
-    swing_air_time = torch.where(
-        left_single_swing, 
-        left_air_time, 
-        torch.where(right_single_swing, right_air_time, torch.zeros_like(left_air_time))
-    )
-
-    # 计算基础奖励（强调两腿角度差异）
-    base_reward = swing_air_time * 10 * torch.abs(left_angle_knee - right_angle_knee)
-
-    # 检查膝关节角度差异是否显著，以避免轻微摆动。
-    has_significant_knee_angle_diff = torch.abs(left_angle_knee - right_angle_knee) > 0.1
-
-    # 检查走路姿势
-    is_walk_pose = (left_angle_knee>0) & (left_angle_hip<0) & (right_angle_knee>0) & (right_angle_hip<0)
-
-    # 根据条件应用奖励/惩罚
-    reward = torch.where(
-        is_single_swing & velocity_condition & has_significant_knee_angle_diff & is_walk_pose,
-        base_reward,          # 单腿摆动+有速度命令 → 正奖励
-        -base_reward   # 其他情况 → 惩罚
-    )
-    reward = torch.clamp(reward, max=threshold)
-    return reward
-
-def track_lin_vel_xy_yaw_frame_exp(
-    env, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
-    """Reward tracking of linear velocity commands (xy axes) in the gravity aligned robot frame using exponential kernel."""
-    # extract the used quantities (to enable type-hinting)
-    asset = env.scene[asset_cfg.name]
-    vel_yaw = quat_apply_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
-    lin_vel_error = torch.sum(
-        torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]), dim=1
-    )
-    return torch.exp(-lin_vel_error / std**2)
-
-
-def track_ang_vel_z_world_exp(
-    env, command_name: str, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
-    """Reward tracking of angular velocity commands (yaw) in world frame using exponential kernel."""
-    # extract the used quantities (to enable type-hinting)
-    asset = env.scene[asset_cfg.name]
-    ang_vel_error = torch.square(env.command_manager.get_command(command_name)[:, 2] - asset.data.root_ang_vel_w[:, 2])
-    return torch.exp(-ang_vel_error / std**2)
-
-
-class progress_reward(ManagerTermBase):
-    """Reward for making progress towards the target."""
-
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        # initialize the base class
-        super().__init__(cfg, env)
-        # create history buffer
-        self.potentials = torch.zeros(env.num_envs, device=env.device)
-        self.prev_potentials = torch.zeros_like(self.potentials)
-
-    def reset(self, env_ids: torch.Tensor):
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = self._env.scene["robot"]
-        # compute projection of current heading to desired heading vector
-        target_pos = torch.tensor(self.cfg.params["target_pos"], device=self.device)
-        to_target_pos = target_pos - asset.data.root_pos_w[env_ids, :3]
-        # reward terms
-        self.potentials[env_ids] = -torch.norm(to_target_pos, p=2, dim=-1) / self._env.step_dt
-        self.prev_potentials[env_ids] = self.potentials[env_ids]
-
-    def __call__(
-        self,
-        env: ManagerBasedRLEnv,
-        target_pos: tuple[float, float, float],
-        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    ) -> torch.Tensor:
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-        # compute vector to target
-        target_pos = torch.tensor(target_pos, device=env.device)
-        to_target_pos = target_pos - asset.data.root_pos_w[:, :3]
-        to_target_pos[:, 2] = 0.0
-        # update history buffer and compute new potential
-        self.prev_potentials[:] = self.potentials[:]
-        self.potentials[:] = -torch.norm(to_target_pos, p=2, dim=-1) / env.step_dt
-
-        return self.potentials - self.prev_potentials
-
-
-class joint_pos_limits_penalty_ratio(ManagerTermBase):
-    """Penalty for violating joint position limits weighted by the gear ratio."""
-
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        # add default argument
-        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-
-        # resolve the gear ratio for each joint
-        self.gear_ratio = torch.ones(env.num_envs, asset.num_joints, device=env.device)
-        index_list, _, value_list = string_utils.resolve_matching_names_values(
-            cfg.params["gear_ratio"], asset.joint_names
-        )
-        self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
-        self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
-
-    def __call__(
-        self,
-        env: ManagerBasedRLEnv,
-        threshold: float,
-        gear_ratio: dict[str, float],
-        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    ) -> torch.Tensor:
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-        # compute the penalty over normalized joints
-        joint_pos_scaled = math_utils.scale_transform(
-            asset.data.joint_pos, asset.data.soft_joint_pos_limits[..., 0], asset.data.soft_joint_pos_limits[..., 1]
-        )
-        # scale the violation amount by the gear ratio
-        violation_amount = (torch.abs(joint_pos_scaled) - threshold) / (1 - threshold)
-        violation_amount = violation_amount * self.gear_ratio_scaled
-
-        return torch.sum((torch.abs(joint_pos_scaled) > threshold) * violation_amount, dim=-1)
-
-
-class power_consumption(ManagerTermBase):
-    """Penalty for the power consumed by the actions to the environment.
-
-    This is computed as commanded torque times the joint velocity.
-    """
-
-    def __init__(self, env: ManagerBasedRLEnv, cfg: RewardTermCfg):
-        # add default argument
-        asset_cfg = cfg.params.get("asset_cfg", SceneEntityCfg("robot"))
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-
-        # resolve the gear ratio for each joint
-        self.gear_ratio = torch.ones(env.num_envs, asset.num_joints, device=env.device)
-        index_list, _, value_list = string_utils.resolve_matching_names_values(
-            cfg.params["gear_ratio"], asset.joint_names
-        )
-        self.gear_ratio[:, index_list] = torch.tensor(value_list, device=env.device)
-        self.gear_ratio_scaled = self.gear_ratio / torch.max(self.gear_ratio)
-
-    def __call__(
-        self, env: ManagerBasedRLEnv, gear_ratio: dict[str, float], asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-    ) -> torch.Tensor:
-        # extract the used quantities (to enable type-hinting)
-        asset: Articulation = env.scene[asset_cfg.name]
-        # return power = torque * velocity (here actions: joint torques)
-        return torch.sum(torch.abs(env.action_manager.action * asset.data.joint_vel * self.gear_ratio_scaled), dim=-1)
+#     # 查找膝关节索引
+#     left_knee_idx = None
+#     right_knee_idx = None
+#     for i, name in enumerate(joint_names):
+#         if "left_joint_3" in name:
+#             left_knee_idx = i
+#         elif "right_joint_3" in name:
+#             right_knee_idx = i
+    
+#     if left_knee_idx is None or right_knee_idx is None or left_foot_idx is None or right_foot_idx is None:
+#         return torch.zeros(env.num_envs, device=env.device)
+    
+#     left_knee_pos = joint_pos[:, left_knee_idx]
+#     right_knee_pos = joint_pos[:, right_knee_idx]
+    
+#     # 检测哪只脚在空中
+#     contact_time = contact_sensor.data.current_contact_time[:, [left_foot_idx, right_foot_idx]]
+#     in_contact = contact_time > 0.0
+#     left_in_contact = in_contact[:, 0]
+#     right_in_contact = in_contact[:, 1]
+    
+#     single_stance = torch.sum(in_contact.int(), dim=1) == 1
+    
+#     # 计算膝盖角度差奖励
+#     left_swing_reward = torch.clamp(right_knee_pos - left_knee_pos - min_bend_angle, min=0.0, max=0.3) / 0.3
+#     right_swing_reward = torch.clamp(left_knee_pos - right_knee_pos - min_bend_angle, min=0.0, max=0.3) / 0.3
+    
+#     knee_reward = torch.where(
+#         ~left_in_contact & right_in_contact,
+#         left_swing_reward,
+#         torch.where(
+#             left_in_contact & ~right_in_contact,
+#             right_swing_reward,
+#             torch.zeros_like(left_swing_reward)
+#         )
+#     )
+    
+#     knee_reward = knee_reward * single_stance.float()
+#     return knee_reward

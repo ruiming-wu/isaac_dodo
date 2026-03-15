@@ -54,11 +54,11 @@ DODO_CFG = ArticulationCfg(
     actuators={
         "legs": ImplicitActuatorCfg(
             joint_names_expr=["left_joint_.*", "right_joint_.*"],
-            stiffness=42.0,
-            damping=2.5,
+            stiffness=45.0,
+            damping=3.0,
             armature = 0.01,
-            effort_limit_sim=6.0,
-            velocity_limit_sim=5.0,
+            effort_limit_sim=18.0,
+            velocity_limit_sim=4.0,
         ),
     },
 )

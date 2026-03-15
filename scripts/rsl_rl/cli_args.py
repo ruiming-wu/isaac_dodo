@@ -37,6 +37,14 @@ def add_rsl_rl_args(parser: argparse.ArgumentParser):
     arg_group.add_argument(
         "--log_project_name", type=str, default=None, help="Name of the logging project when using wandb or neptune."
     )
+    # -- common PPO overrides
+    arg_group.add_argument("--num_steps_per_env", type=int, default=None, help="Rollout length per environment.")
+    arg_group.add_argument("--learning_rate", type=float, default=None, help="Optimizer learning rate.")
+    arg_group.add_argument("--entropy_coef", type=float, default=None, help="Entropy regularization coefficient.")
+    arg_group.add_argument("--num_learning_epochs", type=int, default=None, help="PPO learning epochs per update.")
+    arg_group.add_argument("--num_mini_batches", type=int, default=None, help="Number of PPO mini-batches.")
+    arg_group.add_argument("--init_noise_std", type=float, default=None, help="Initial action noise std.")
+    arg_group.add_argument("--experiment_tag", type=str, default=None, help="Extra suffix appended to run_name.")
 
 
 def parse_rsl_rl_cfg(task_name: str, args_cli: argparse.Namespace) -> RslRlOnPolicyRunnerCfg:
@@ -81,11 +89,27 @@ def update_rsl_rl_cfg(agent_cfg: RslRlOnPolicyRunnerCfg, args_cli: argparse.Name
         agent_cfg.load_checkpoint = args_cli.checkpoint
     if args_cli.run_name is not None:
         agent_cfg.run_name = args_cli.run_name
+    if args_cli.experiment_tag is not None:
+        agent_cfg.run_name = (
+            f"{agent_cfg.run_name}_{args_cli.experiment_tag}" if agent_cfg.run_name else args_cli.experiment_tag
+        )
     if args_cli.logger is not None:
         agent_cfg.logger = args_cli.logger
     # set the project name for wandb and neptune
     if agent_cfg.logger in {"wandb", "neptune"} and args_cli.log_project_name:
         agent_cfg.wandb_project = args_cli.log_project_name
         agent_cfg.neptune_project = args_cli.log_project_name
+    if getattr(args_cli, "num_steps_per_env", None) is not None:
+        agent_cfg.num_steps_per_env = args_cli.num_steps_per_env
+    if getattr(args_cli, "learning_rate", None) is not None:
+        agent_cfg.algorithm.learning_rate = args_cli.learning_rate
+    if getattr(args_cli, "entropy_coef", None) is not None:
+        agent_cfg.algorithm.entropy_coef = args_cli.entropy_coef
+    if getattr(args_cli, "num_learning_epochs", None) is not None:
+        agent_cfg.algorithm.num_learning_epochs = args_cli.num_learning_epochs
+    if getattr(args_cli, "num_mini_batches", None) is not None:
+        agent_cfg.algorithm.num_mini_batches = args_cli.num_mini_batches
+    if getattr(args_cli, "init_noise_std", None) is not None:
+        agent_cfg.policy.init_noise_std = args_cli.init_noise_std
 
     return agent_cfg
