@@ -67,3 +67,7 @@ tests/
 
 # Docker history
 .isaac-lab-docker-history
+
+# Training artifacts
+logs/
+*.tfevents*

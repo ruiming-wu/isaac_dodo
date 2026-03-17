@@ -1,6 +1,6 @@
-asset_path: /home/dodolab/Downloads/dodobot_v3/urdf/dodobot_v3_simple.urdf
+asset_path: /home/dodolab/Downloads/dodo_daimao/urdf/dodo_daimao.urdf
 usd_dir: /home/dodolab/isaac_dodo/assets
-usd_file_name: dodobot_v3_simple.usd
+usd_file_name: dodo_daimao.usd
 force_usd_conversion: true
 make_instanceable: true
 fix_base: false
